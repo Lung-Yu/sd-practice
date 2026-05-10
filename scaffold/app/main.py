@@ -1,3 +1,4 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -7,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from . import cache
+from .consumer import scan_consumer
 from .database import Base, engine
 from .routes import router
 
@@ -19,7 +21,13 @@ async def lifespan(app: FastAPI):
         os.getenv("REDIS_URL", "redis://localhost:6479/0"),
         decode_responses=False,
     )
+    consumer_task = asyncio.create_task(scan_consumer())
     yield
+    consumer_task.cancel()
+    try:
+        await consumer_task
+    except asyncio.CancelledError:
+        pass
     await cache.redis_client.aclose()
 
 

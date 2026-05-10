@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import cache
-from .database import AsyncSessionLocal, get_db
+from .database import get_db
 from .metrics import cache_hits, cache_misses, qr_created, redirects
 from .models import ScanEvent, UrlMapping
 from .schemas import CreateRequest, CreateResponse, QRInfoResponse, UpdateRequest
@@ -51,7 +51,7 @@ async def redirect(token: str, request: Request, background_tasks: BackgroundTas
     cached_url = await cache.get_cached_url(token)
     if cached_url:
         cache_hits.inc()
-        background_tasks.add_task(_record_scan, token, request)
+        background_tasks.add_task(_enqueue_scan, token, request)
         redirects.labels(status="302").inc()
         return RedirectResponse(url=cached_url, status_code=302)
 
@@ -66,7 +66,7 @@ async def redirect(token: str, request: Request, background_tasks: BackgroundTas
         raise HTTPException(status_code=410, detail="Gone")
 
     await cache.set_cached_url(token, mapping.original_url)
-    background_tasks.add_task(_record_scan, token, request)
+    background_tasks.add_task(_enqueue_scan, token, request)
     redirects.labels(status="302").inc()
     return RedirectResponse(url=mapping.original_url, status_code=302)
 
@@ -139,12 +139,9 @@ async def _get_mapping_or_404(token: str, db: AsyncSession) -> UrlMapping:
     return mapping
 
 
-async def _record_scan(token: str, request: Request):
-    async with AsyncSessionLocal() as db:
-        event = ScanEvent(
-            token=token,
-            user_agent=request.headers.get("user-agent"),
-            ip_address=request.client.host if request.client else None,
-        )
-        db.add(event)
-        await db.commit()
+async def _enqueue_scan(token: str, request: Request) -> None:
+    await cache.enqueue_scan(
+        token=token,
+        user_agent=request.headers.get("user-agent", ""),
+        ip=request.client.host if request.client else "",
+    )

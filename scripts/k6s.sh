@@ -10,13 +10,15 @@ if ! command -v k6 &>/dev/null; then
   exit 1
 fi
 
-echo "Running k6 load test against $BASE_URL"
-echo "Pushing metrics to Prometheus at $PROM_URL"
+echo "Target:          $BASE_URL"
+echo "Prometheus RW:   $PROM_URL"
+echo "Peak QPS target: 5000"
 echo ""
 
 K6_PROMETHEUS_RW_SERVER_URL="$PROM_URL" \
 K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=false \
 K6_PROMETHEUS_RW_TREND_STATS="p(50),p(95),p(99)" \
+K6_PROMETHEUS_RW_PUSH_INTERVAL="5s" \
 k6 run \
   --out experimental-prometheus-rw \
   -e BASE_URL="$BASE_URL" \

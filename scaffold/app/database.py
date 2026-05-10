@@ -8,7 +8,12 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://qruser:qrpass@localhost:5532/qrcode",
 )
 
-engine = create_async_engine(DATABASE_URL, pool_size=20, max_overflow=40)
+engine = create_async_engine(
+    DATABASE_URL,
+    pool_size=50,
+    max_overflow=50,
+    connect_args={"statement_cache_size": 0},
+)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 

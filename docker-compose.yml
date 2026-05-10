@@ -20,17 +20,35 @@ services:
     ports:
       - "6479:6379"
 
+  pgbouncer:
+    image: docker.io/edoburu/pgbouncer:latest
+    environment:
+      - DB_USER=qruser
+      - DB_PASSWORD=qrpass
+      - DB_HOST=postgres
+      - DB_NAME=qrcode
+      - POOL_MODE=transaction
+      - MAX_CLIENT_CONN=1000
+      - DEFAULT_POOL_SIZE=25
+      - SERVER_RESET_QUERY=DISCARD ALL
+      - AUTH_TYPE=scram-sha-256
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   app:
     build: ./scaffold
     ports:
       - "8100:8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://qruser:qrpass@postgres:5432/qrcode
+      - DATABASE_URL=postgresql+asyncpg://qruser:qrpass@pgbouncer:5432/qrcode
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_started
+      pgbouncer:
         condition: service_started
 
   prometheus:

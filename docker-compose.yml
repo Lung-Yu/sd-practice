@@ -15,15 +15,23 @@ services:
       timeout: 3s
       retries: 10
 
+  redis:
+    image: docker.io/redis:7-alpine
+    ports:
+      - "6479:6379"
+
   app:
     build: ./scaffold
     ports:
       - "8100:8000"
     environment:
-      - DATABASE_URL=postgresql://qruser:qrpass@postgres:5432/qrcode
+      - DATABASE_URL=postgresql+asyncpg://qruser:qrpass@postgres:5432/qrcode
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_started
 
   prometheus:
     image: docker.io/prom/prometheus:latest

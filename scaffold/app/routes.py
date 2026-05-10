@@ -2,10 +2,11 @@ from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from .database import get_db
+from . import cache
+from .database import AsyncSessionLocal, get_db
 from .metrics import cache_hits, cache_misses, qr_created, redirects
 from .models import ScanEvent, UrlMapping
 from .schemas import CreateRequest, CreateResponse, QRInfoResponse, UpdateRequest
@@ -14,19 +15,16 @@ from .url_validator import validate_url
 
 router = APIRouter()
 
-# In-memory cache (simulates Redis for prototype)
-redirect_cache: dict[str, str] = {}
-
 BASE_URL = "http://localhost:8100"
 
 
 @router.post("/api/qr/create", response_model=CreateResponse)
-def create_qr(req: CreateRequest, db: Session = Depends(get_db)):
+async def create_qr(req: CreateRequest, db: AsyncSession = Depends(get_db)):
     try:
         normalized_url = validate_url(req.url)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    token = generate_token(normalized_url, db)
+    token = await generate_token(normalized_url, db)
 
     mapping = UrlMapping(
         token=token,
@@ -34,10 +32,10 @@ def create_qr(req: CreateRequest, db: Session = Depends(get_db)):
         expires_at=req.expires_at,
     )
     db.add(mapping)
-    db.commit()
+    await db.commit()
 
     short_url = f"{BASE_URL}/r/{token}"
-    redirect_cache[token] = normalized_url
+    await cache.set_cached_url(token, normalized_url)
     qr_created.inc()
 
     return CreateResponse(
@@ -48,16 +46,18 @@ def create_qr(req: CreateRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/r/{token}")
-def redirect(token: str, request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """Cache-first redirect: Cache -> DB -> 404/410. Scan recorded as background task."""
-    if token in redirect_cache:
+async def redirect(token: str, request: Request, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    """Cache-first redirect: Redis -> DB -> 404/410. Scan recorded as background task."""
+    cached_url = await cache.get_cached_url(token)
+    if cached_url:
         cache_hits.inc()
-        background_tasks.add_task(_record_scan, token, request, db)
+        background_tasks.add_task(_record_scan, token, request)
         redirects.labels(status="302").inc()
-        return RedirectResponse(url=redirect_cache[token], status_code=302)
+        return RedirectResponse(url=cached_url, status_code=302)
 
     cache_misses.inc()
-    mapping = db.query(UrlMapping).filter(UrlMapping.token == token).first()
+    result = await db.execute(select(UrlMapping).filter(UrlMapping.token == token))
+    mapping = result.scalar_one_or_none()
     if mapping is None:
         redirects.labels(status="404").inc()
         raise HTTPException(status_code=404, detail="Not Found")
@@ -65,62 +65,64 @@ def redirect(token: str, request: Request, background_tasks: BackgroundTasks, db
         redirects.labels(status="410").inc()
         raise HTTPException(status_code=410, detail="Gone")
 
-    redirect_cache[token] = mapping.original_url
-    background_tasks.add_task(_record_scan, token, request, db)
+    await cache.set_cached_url(token, mapping.original_url)
+    background_tasks.add_task(_record_scan, token, request)
     redirects.labels(status="302").inc()
     return RedirectResponse(url=mapping.original_url, status_code=302)
 
 
 @router.get("/api/qr/{token}", response_model=QRInfoResponse)
-def get_qr_info(token: str, db: Session = Depends(get_db)):
-    mapping = _get_mapping_or_404(token, db)
-    return mapping
+async def get_qr_info(token: str, db: AsyncSession = Depends(get_db)):
+    return await _get_mapping_or_404(token, db)
 
 
 @router.patch("/api/qr/{token}", response_model=QRInfoResponse)
-def update_qr(token: str, req: UpdateRequest, db: Session = Depends(get_db)):
-    mapping = _get_mapping_or_404(token, db)
+async def update_qr(token: str, req: UpdateRequest, db: AsyncSession = Depends(get_db)):
+    mapping = await _get_mapping_or_404(token, db)
 
     if req.url is not None:
         try:
             mapping.original_url = validate_url(req.url)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
-        redirect_cache.pop(token, None)
+        await cache.delete_cached_url(token)
 
     if req.expires_at is not None:
         mapping.expires_at = req.expires_at
-        redirect_cache.pop(token, None)
+        await cache.delete_cached_url(token)
 
-    db.commit()
-    db.refresh(mapping)
+    await db.commit()
+    await db.refresh(mapping)
     return mapping
 
 
 @router.delete("/api/qr/{token}")
-def delete_qr(token: str, db: Session = Depends(get_db)):
-    mapping = _get_mapping_or_404(token, db)
+async def delete_qr(token: str, db: AsyncSession = Depends(get_db)):
+    mapping = await _get_mapping_or_404(token, db)
     mapping.is_deleted = True
-    db.commit()
-    redirect_cache.pop(token, None)
+    await db.commit()
+    await cache.delete_cached_url(token)
     return {"detail": "Deleted"}
 
 
 @router.get("/api/qr/{token}/analytics")
-def get_analytics(token: str, db: Session = Depends(get_db)):
-    _get_mapping_or_404(token, db)
+async def get_analytics(token: str, db: AsyncSession = Depends(get_db)):
+    await _get_mapping_or_404(token, db)
 
-    total = db.query(func.count(ScanEvent.id)).filter(ScanEvent.token == token).scalar()
+    result = await db.execute(
+        select(func.count(ScanEvent.id)).filter(ScanEvent.token == token)
+    )
+    total = result.scalar()
 
-    daily = (
-        db.query(
+    result = await db.execute(
+        select(
             func.date(ScanEvent.scanned_at).label("date"),
             func.count(ScanEvent.id).label("count"),
         )
         .filter(ScanEvent.token == token)
         .group_by(func.date(ScanEvent.scanned_at))
-        .all()
     )
+    daily = result.all()
 
     return {
         "token": token,
@@ -129,18 +131,20 @@ def get_analytics(token: str, db: Session = Depends(get_db)):
     }
 
 
-def _get_mapping_or_404(token: str, db: Session) -> UrlMapping:
-    mapping = db.query(UrlMapping).filter(UrlMapping.token == token).first()
+async def _get_mapping_or_404(token: str, db: AsyncSession) -> UrlMapping:
+    result = await db.execute(select(UrlMapping).filter(UrlMapping.token == token))
+    mapping = result.scalar_one_or_none()
     if mapping is None or mapping.is_deleted:
         raise HTTPException(status_code=404, detail="Not Found")
     return mapping
 
 
-def _record_scan(token: str, request: Request, db: Session):
-    event = ScanEvent(
-        token=token,
-        user_agent=request.headers.get("user-agent"),
-        ip_address=request.client.host if request.client else None,
-    )
-    db.add(event)
-    db.commit()
+async def _record_scan(token: str, request: Request):
+    async with AsyncSessionLocal() as db:
+        event = ScanEvent(
+            token=token,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+        db.add(event)
+        await db.commit()

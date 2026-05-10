@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -48,11 +48,11 @@ def create_qr(req: CreateRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/r/{token}")
-def redirect(token: str, request: Request, db: Session = Depends(get_db)):
-    """Cache-first redirect: Cache -> DB -> 404/410."""
+def redirect(token: str, request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Cache-first redirect: Cache -> DB -> 404/410. Scan recorded as background task."""
     if token in redirect_cache:
         cache_hits.inc()
-        _record_scan(token, request, db)
+        background_tasks.add_task(_record_scan, token, request, db)
         redirects.labels(status="302").inc()
         return RedirectResponse(url=redirect_cache[token], status_code=302)
 
@@ -66,7 +66,7 @@ def redirect(token: str, request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=410, detail="Gone")
 
     redirect_cache[token] = mapping.original_url
-    _record_scan(token, request, db)
+    background_tasks.add_task(_record_scan, token, request, db)
     redirects.labels(status="302").inc()
     return RedirectResponse(url=mapping.original_url, status_code=302)
 

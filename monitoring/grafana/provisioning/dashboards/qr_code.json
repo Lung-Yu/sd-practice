@@ -1,0 +1,318 @@
+{
+  "title": "QR Code Generator",
+  "uid": "qr-code-gen",
+  "version": 1,
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 2,
+        "includeAll": false,
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+
+    {
+      "id": 100,
+      "title": "── App Metrics ──",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }
+    },
+
+    {
+      "id": 1,
+      "title": "Request Rate (req/s)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 1, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (handler) (rate(http_requests_total{job=\"qr_code_app\"}[1m]))",
+          "legendFormat": "{{handler}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 10 } }
+      }
+    },
+
+    {
+      "id": 2,
+      "title": "Redirect Outcomes",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 1, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (status) (rate(qr_redirects_total[1m]))",
+          "legendFormat": "HTTP {{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 10 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "HTTP 302" }, "properties": [{ "id": "color", "value": { "fixedColor": "green",  "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "HTTP 404" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "HTTP 410" }, "properties": [{ "id": "color", "value": { "fixedColor": "red",    "mode": "fixed" } }] }
+        ]
+      }
+    },
+
+    {
+      "id": 3,
+      "title": "Cache Hit Rate",
+      "type": "gauge",
+      "gridPos": { "x": 0, "y": 9, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "100 * rate(qr_cache_hits_total[5m]) / (rate(qr_cache_hits_total[5m]) + rate(qr_cache_misses_total[5m]))",
+          "legendFormat": "Hit Rate %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 50 }, { "color": "green", "value": 80 }]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 4,
+      "title": "QR Codes Created (rate/min)",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 9, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "rate(qr_codes_created_total[1m]) * 60",
+          "legendFormat": "per minute"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        }
+      }
+    },
+
+    {
+      "id": 5,
+      "title": "App Response Duration P50 / P95 / P99",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 9, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=\"qr_code_app\"}[1m])) by (le))", "legendFormat": "p50" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"qr_code_app\"}[1m])) by (le))", "legendFormat": "p95" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=\"qr_code_app\"}[1m])) by (le))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2, "fillOpacity": 5 } }
+      }
+    },
+
+    {
+      "id": 6,
+      "title": "HTTP Status Breakdown",
+      "type": "piechart",
+      "gridPos": { "x": 0, "y": 17, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (status) (increase(http_requests_total{job=\"qr_code_app\"}[5m]))",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+
+    {
+      "id": 7,
+      "title": "Cache Hits vs Misses",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 17, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "rate(qr_cache_hits_total[1m])",   "legendFormat": "hits" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "rate(qr_cache_misses_total[1m])", "legendFormat": "misses" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 10 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "hits" },   "properties": [{ "id": "color", "value": { "fixedColor": "green",  "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "misses" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
+        ]
+      }
+    },
+
+    {
+      "id": 200,
+      "title": "── k6 Load Test Results ──",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 25, "w": 24, "h": 1 }
+    },
+
+    {
+      "id": 10,
+      "title": "k6 — Virtual Users",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 26, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "k6_vus",     "legendFormat": "active VUs" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "k6_vus_max", "legendFormat": "max VUs" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 20 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "active VUs" }, "properties": [{ "id": "color", "value": { "fixedColor": "purple", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "max VUs" },    "properties": [{ "id": "color", "value": { "fixedColor": "gray",   "mode": "fixed" } }, { "id": "custom.lineStyle", "value": { "dash": [4,4], "fill": "dash" } }] }
+        ]
+      }
+    },
+
+    {
+      "id": 11,
+      "title": "k6 — Request Rate by Scenario",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 26, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (name) (rate(k6_http_reqs_total[1m]))",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 10 } }
+      }
+    },
+
+    {
+      "id": 12,
+      "title": "k6 — Iterations / s",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 26, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "rate(k6_iterations_total[1m])",
+          "legendFormat": "iter/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        }
+      }
+    },
+
+    {
+      "id": 13,
+      "title": "k6 — Request Duration by Scenario (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 34, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "avg by (name) (k6_http_req_duration_p50)", "legendFormat": "{{name}} p50" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "avg by (name) (k6_http_req_duration_p95)", "legendFormat": "{{name}} p95" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "avg by (name) (k6_http_req_duration_p99)", "legendFormat": "{{name}} p99" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2, "fillOpacity": 5 } }
+      }
+    },
+
+    {
+      "id": 14,
+      "title": "k6 — Check Pass Rate by Scenario",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 34, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "100 * avg by (scenario) (k6_checks_rate)",
+          "legendFormat": "{{scenario}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "custom": { "lineWidth": 2, "fillOpacity": 5 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 90 }, { "color": "green", "value": 99 }]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 15,
+      "title": "k6 — Failed Request Rate by Scenario",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 42, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "100 * avg by (name) (k6_http_req_failed_rate)",
+          "legendFormat": "{{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "custom": { "lineWidth": 2, "fillOpacity": 15 }
+        }
+      }
+    },
+
+    {
+      "id": 16,
+      "title": "k6 — Data Throughput",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 42, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "rate(k6_data_sent_total[1m])",     "legendFormat": "sent" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "rate(k6_data_received_total[1m])", "legendFormat": "received" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "Bps", "custom": { "lineWidth": 2, "fillOpacity": 10 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "sent" },     "properties": [{ "id": "color", "value": { "fixedColor": "blue",  "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "received" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] }
+        ]
+      }
+    }
+
+  ]
+}

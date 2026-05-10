@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: docker.io/postgres:16-alpine
+    environment:
+      POSTGRES_DB: qrcode
+      POSTGRES_USER: qruser
+      POSTGRES_PASSWORD: qrpass
+    ports:
+      - "5532:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qruser -d qrcode"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: ./scaffold
+    ports:
+      - "8100:8000"
+    environment:
+      - DATABASE_URL=postgresql://qruser:qrpass@postgres:5432/qrcode
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  prometheus:
+    image: docker.io/prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
+    ports:
+      - "9190:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: docker.io/grafana/grafana:latest
+    ports:
+      - "3100:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+
+volumes:
+  pg_data:
+  grafana_data:

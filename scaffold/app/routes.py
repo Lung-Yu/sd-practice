@@ -3,6 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import cache
@@ -24,15 +25,22 @@ async def create_qr(req: CreateRequest, db: AsyncSession = Depends(get_db)):
         normalized_url = validate_url(req.url)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    token = await generate_token(normalized_url, db)
 
-    mapping = UrlMapping(
-        token=token,
-        original_url=normalized_url,
-        expires_at=req.expires_at,
-    )
-    db.add(mapping)
-    await db.commit()
+    for _ in range(10):
+        token = generate_token(normalized_url)
+        mapping = UrlMapping(
+            token=token,
+            original_url=normalized_url,
+            expires_at=req.expires_at,
+        )
+        db.add(mapping)
+        try:
+            await db.commit()
+            break
+        except IntegrityError:
+            await db.rollback()
+    else:
+        raise HTTPException(status_code=500, detail="Token generation failed")
 
     short_url = f"{BASE_URL}/r/{token}"
     await cache.set_cached_url(token, normalized_url)

@@ -1,3 +1,4 @@
+import time
 from datetime import datetime
 
 import redis.asyncio as aioredis
@@ -35,6 +36,17 @@ async def is_cached_gone(token: str) -> bool:
 async def set_cached_gone(token: str) -> None:
     if redis_client:
         await redis_client.set(f"gone:{token}", b"1", ex=60)
+
+
+async def check_rate_limit(ip: str, max_requests: int = 60, window: int = 1) -> bool:
+    """Returns True if request is allowed. Fixed-window: max_requests per window seconds per IP."""
+    if redis_client is None:
+        return True
+    key = f"ratelimit:create:{ip}:{int(time.time()) // window}"
+    count = await redis_client.incr(key)
+    if count == 1:
+        await redis_client.expire(key, window + 1)
+    return count <= max_requests
 
 
 async def enqueue_scan(token: str, user_agent: str, ip: str) -> None:

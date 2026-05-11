@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -19,8 +19,18 @@ router = APIRouter()
 BASE_URL = "http://localhost:8100"
 
 
+async def _rate_limit_create(request: Request) -> None:
+    ip = request.headers.get("X-Forwarded-For", request.client.host).split(",")[0].strip()
+    if not await cache.check_rate_limit(ip):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too Many Requests")
+
+
 @router.post("/api/qr/create", response_model=CreateResponse)
-async def create_qr(req: CreateRequest, db: AsyncSession = Depends(get_db)):
+async def create_qr(
+    req: CreateRequest,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_rate_limit_create),
+):
     try:
         normalized_url = validate_url(req.url)
     except ValueError as e:

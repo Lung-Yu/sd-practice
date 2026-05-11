@@ -214,6 +214,7 @@ location = /api/qr/create {
 | **Phase 7** | Negative cache 消除無效 DB 查詢；expires_at bug | WAL fsync 是 create 的絕對延遲主因 |
 | **Phase 8** | WAL fsync（synchronous_commit=off）；pool 浪費；Nginx keepalive 分析 | Podman VM 5 vCPU 資源瓶頸（非架構問題） |
 | **Phase 9** | Redis 重啟資料丟失；analytics 打 Primary；create 濫用；Nginx TCP overhead | UNLOGGED ⊕ Replication 不相容（優化之間的相依性） |
+| **Phase 10** | Rate limit 從 Nginx → FastAPI dependency（Middleware 陷阱） | Python workers 是唯一剩餘瓶頸；LB 層換不動它 |
 
 ---
 
@@ -231,30 +232,45 @@ location = /api/qr/create {
 
 ---
 
+### Phase 10 — LB 層驗證 + Rate Limit 遷移
+
+**直連壓測：** app1 單機 = 2,304 req/s；理論 2 × 2,304 = 4,608，但 Nginx + 2 apps = 2,661（Nginx 吃掉 ~42% 理論值）。瓶頸確認在 Python workers，不在 LB。
+
+**HAProxy 實驗（失敗）：** HAProxy 2,520 req/s，仍低於 Nginx 2,661 req/s。假說「換 LB 可以釋放 CPU」被否定，回滾 Nginx。
+
+**Rate limit 遷移（成功）：**
+- Nginx `limit_req_zone` → FastAPI route dependency
+- Global middleware 對所有請求加 overhead（-25%）→ dependency 只掛 create route，redirect 零負擔
+- Redis fixed-window counter：`ratelimit:create:{ip}:{unix_second}`，max=60/s（等效 rate=20 burst=40）
+
+---
+
 ## 最終架構
 
 ```
-Nginx（+rate limit: create 20r/s per IP）
+Nginx（keepalive 128，無 rate limit config）
   → app1 / app2（各 6 uvicorn workers）
       ├── 寫入路徑 → PgBouncer → PostgreSQL Primary
       │   (synchronous_commit=off, shared_buffers=256MB, wal_level=replica)
       │                     ↓ WAL streaming
       │             PostgreSQL Replica（replay_lag ~1.8ms）
       └── 讀取路徑（get_qr_info, analytics）→ Replica
-      Redis（AOF, appendfsync=everysec, redis_data volume）
+      Redis（AOF, appendfsync=everysec）
+      Rate limit：FastAPI _rate_limit_create dependency（Redis counter）
 ```
 
 ---
 
 ## 結語
 
-本次優化從 Baseline 的同步阻塞架構出發，歷經九個 Phase，在 **redirect throughput 提升 254%（752 → 2,661 req/s）** 的同時：
+本次優化從 Baseline 的同步阻塞架構出發，歷經十個 Phase，在 **redirect throughput 提升 254%（752 → 2,661 req/s）** 的同時：
 
 - Redirect 延遲從 3,847ms p50 壓縮至次毫秒（Redis cache hit 路徑，> -99.9%）
 - Create p50 從 4,680ms 壓縮至 42ms（-99.1%），吞吐量 +84%
 - 系統可靠性：Redis AOF 持久化、Read Replica 讀寫分離、Rate Limiting 防濫用
 
-優化過程中最關鍵的三個洞察：
+優化過程中最關鍵的四個洞察：
 1. **消除不必要的操作，勝於優化已有的操作**（Negative cache 消除 DB 查詢、synchronous_commit=off 消除 WAL fsync 等待）
-2. **水平擴展只對正確的瓶頸有效**（write I/O-bound 下加 app worker 反而更差）
+2. **水平擴展只對正確的瓶頸有效**（write I/O-bound 下加 app worker 反而更差；換 LB 無法突破 app worker 瓶頸）
 3. **優化之間有相依性**（UNLOGGED TABLE 與 Streaming Replication 不相容，引入單一優化前應考慮後續架構方向）
+4. **Guard 邏輯放在正確的層**（Global middleware 污染所有路徑；route dependency 只影響目標 route）

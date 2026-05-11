@@ -7,6 +7,8 @@ services:
       -c checkpoint_completion_target=0.9
       -c wal_buffers=16MB
       -c shared_buffers=256MB
+      -c wal_level=replica
+      -c max_wal_senders=3
     environment:
       POSTGRES_DB: qrcode
       POSTGRES_USER: qruser
@@ -29,6 +31,25 @@ services:
     volumes:
       - redis_data:/data
 
+  postgres_replica:
+    image: docker.io/postgres:16-alpine
+    user: postgres
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      PGPASSWORD: replicatorpass
+    entrypoint: ["/bin/sh", "/scripts/replica_entrypoint.sh"]
+    volumes:
+      - pg_replica_data:/var/lib/postgresql/data
+      - ./postgres/replica_entrypoint.sh:/scripts/replica_entrypoint.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qruser -d qrcode"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
   pgbouncer:
     image: docker.io/edoburu/pgbouncer:latest
     environment:
@@ -49,6 +70,7 @@ services:
     build: ./scaffold
     environment:
       - DATABASE_URL=postgresql+asyncpg://qruser:qrpass@pgbouncer:5432/qrcode
+      - READ_DATABASE_URL=postgresql+asyncpg://qruser:qrpass@postgres_replica:5432/qrcode
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       postgres:
@@ -62,6 +84,7 @@ services:
     build: ./scaffold
     environment:
       - DATABASE_URL=postgresql+asyncpg://qruser:qrpass@pgbouncer:5432/qrcode
+      - READ_DATABASE_URL=postgresql+asyncpg://qruser:qrpass@postgres_replica:5432/qrcode
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       postgres:
@@ -107,3 +130,4 @@ volumes:
   pg_data:
   grafana_data:
   redis_data:
+  pg_replica_data:

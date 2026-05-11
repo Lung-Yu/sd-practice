@@ -17,10 +17,26 @@ engine = create_async_engine(
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
+READ_DATABASE_URL = os.getenv("READ_DATABASE_URL", DATABASE_URL)
+
+read_engine = create_async_engine(
+    READ_DATABASE_URL,
+    pool_size=5,
+    max_overflow=5,
+    connect_args={"statement_cache_size": 0},
+)
+ReadAsyncSessionLocal = async_sessionmaker(read_engine, expire_on_commit=False)
+
+
 class Base(DeclarativeBase):
     pass
 
 
 async def get_db():
     async with AsyncSessionLocal() as session:
+        yield session
+
+
+async def get_read_db():
+    async with ReadAsyncSessionLocal() as session:
         yield session

@@ -31,5 +31,4 @@ class ScanEvent(Base):
 
     __table_args__ = (
         Index("idx_token_scanned", "token", "scanned_at"),
-        {"prefixes": ["UNLOGGED"]},
     )

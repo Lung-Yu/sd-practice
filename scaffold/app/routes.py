@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from . import cache
-from .database import get_db
+from .database import get_db, get_read_db
 from .metrics import cache_hits, cache_misses, qr_created, redirects
 from .models import ScanEvent, UrlMapping
 from .schemas import CreateRequest, CreateResponse, QRInfoResponse, UpdateRequest
@@ -92,7 +92,7 @@ async def redirect(token: str, request: Request, background_tasks: BackgroundTas
 
 
 @router.get("/api/qr/{token}", response_model=QRInfoResponse)
-async def get_qr_info(token: str, db: AsyncSession = Depends(get_db)):
+async def get_qr_info(token: str, db: AsyncSession = Depends(get_read_db)):
     return await _get_mapping_or_404(token, db)
 
 
@@ -126,7 +126,7 @@ async def delete_qr(token: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/api/qr/{token}/analytics")
-async def get_analytics(token: str, db: AsyncSession = Depends(get_db)):
+async def get_analytics(token: str, db: AsyncSession = Depends(get_read_db)):
     await _get_mapping_or_404(token, db)
 
     result = await db.execute(

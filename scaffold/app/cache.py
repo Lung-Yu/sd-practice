@@ -4,6 +4,8 @@ import redis.asyncio as aioredis
 
 redis_client: aioredis.Redis | None = None
 
+_DEFAULT_TTL = 86400  # 24h fallback when no expires_at
+
 
 async def get_cached_url(token: str) -> str | None:
     if redis_client is None:
@@ -12,14 +14,27 @@ async def get_cached_url(token: str) -> str | None:
     return value.decode() if value else None
 
 
-async def set_cached_url(token: str, url: str) -> None:
+async def set_cached_url(token: str, url: str, ttl: int | None = None) -> None:
     if redis_client:
-        await redis_client.set(f"r:{token}", url)
+        ex = ttl if ttl and ttl > 0 else _DEFAULT_TTL
+        await redis_client.set(f"r:{token}", url, ex=ex)
 
 
 async def delete_cached_url(token: str) -> None:
     if redis_client:
         await redis_client.delete(f"r:{token}")
+        await redis_client.delete(f"gone:{token}")
+
+
+async def is_cached_gone(token: str) -> bool:
+    if redis_client is None:
+        return False
+    return await redis_client.exists(f"gone:{token}") > 0
+
+
+async def set_cached_gone(token: str) -> None:
+    if redis_client:
+        await redis_client.set(f"gone:{token}", b"1", ex=60)
 
 
 async def enqueue_scan(token: str, user_agent: str, ip: str) -> None:

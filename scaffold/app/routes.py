@@ -43,7 +43,10 @@ async def create_qr(req: CreateRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Token generation failed")
 
     short_url = f"{BASE_URL}/r/{token}"
-    await cache.set_cached_url(token, normalized_url)
+    ttl = None
+    if mapping.expires_at:
+        ttl = int((mapping.expires_at - datetime.utcnow()).total_seconds())
+    await cache.set_cached_url(token, normalized_url, ttl=ttl)
     qr_created.inc()
 
     return CreateResponse(
@@ -55,7 +58,7 @@ async def create_qr(req: CreateRequest, db: AsyncSession = Depends(get_db)):
 
 @router.get("/r/{token}")
 async def redirect(token: str, request: Request, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
-    """Cache-first redirect: Redis -> DB -> 404/410. Scan recorded as background task."""
+    """Cache-first redirect: Redis -> negative cache -> DB -> 404/410."""
     cached_url = await cache.get_cached_url(token)
     if cached_url:
         cache_hits.inc()
@@ -63,17 +66,26 @@ async def redirect(token: str, request: Request, background_tasks: BackgroundTas
         redirects.labels(status="302").inc()
         return RedirectResponse(url=cached_url, status_code=302)
 
+    if await cache.is_cached_gone(token):
+        redirects.labels(status="404").inc()
+        raise HTTPException(status_code=404, detail="Not Found")
+
     cache_misses.inc()
     result = await db.execute(select(UrlMapping).filter(UrlMapping.token == token))
     mapping = result.scalar_one_or_none()
     if mapping is None:
+        await cache.set_cached_gone(token)
         redirects.labels(status="404").inc()
         raise HTTPException(status_code=404, detail="Not Found")
     if mapping.is_deleted or (mapping.expires_at and mapping.expires_at < datetime.utcnow()):
+        await cache.set_cached_gone(token)
         redirects.labels(status="410").inc()
         raise HTTPException(status_code=410, detail="Gone")
 
-    await cache.set_cached_url(token, mapping.original_url)
+    ttl = None
+    if mapping.expires_at:
+        ttl = int((mapping.expires_at - datetime.utcnow()).total_seconds())
+    await cache.set_cached_url(token, mapping.original_url, ttl=ttl)
     background_tasks.add_task(_enqueue_scan, token, request)
     redirects.labels(status="302").inc()
     return RedirectResponse(url=mapping.original_url, status_code=302)

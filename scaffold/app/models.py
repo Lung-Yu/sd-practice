@@ -29,4 +29,7 @@ class ScanEvent(Base):
     user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
 
-    __table_args__ = (Index("idx_token_scanned", "token", "scanned_at"),)
+    __table_args__ = (
+        Index("idx_token_scanned", "token", "scanned_at"),
+        {"prefixes": ["UNLOGGED"]},
+    )

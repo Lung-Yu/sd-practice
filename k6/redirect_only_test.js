@@ -1,5 +1,5 @@
 import http from "k6/http";
-import { check } from "k6";
+import { check, sleep } from "k6";
 
 const BASE_URL = __ENV.BASE_URL || "http://localhost:8100";
 
@@ -54,6 +54,9 @@ export function setup() {
       { headers: { "Content-Type": "application/json" }, tags: { name: "setup_create" } }
     );
     if (res.status === 200) tokens.push(JSON.parse(res.body).token);
+    // Throttle to ~40 req/s to stay under the 60/s rate limit per IP.
+    // Without this, all 500 creates land in one 1-second window → only 60 seeded.
+    sleep(0.025);
   }
   console.log(`Setup: seeded ${tokens.length} tokens into Redis cache`);
   return { tokens };

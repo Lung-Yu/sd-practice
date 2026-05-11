@@ -215,6 +215,7 @@ location = /api/qr/create {
 | **Phase 8** | WAL fsync（synchronous_commit=off）；pool 浪費；Nginx keepalive 分析 | Podman VM 5 vCPU 資源瓶頸（非架構問題） |
 | **Phase 9** | Redis 重啟資料丟失；analytics 打 Primary；create 濫用；Nginx TCP overhead | UNLOGGED ⊕ Replication 不相容（優化之間的相依性） |
 | **Phase 10** | Rate limit 從 Nginx → FastAPI dependency（Middleware 陷阱） | Python workers 是唯一剩餘瓶頸；LB 層換不動它 |
+| **Phase 11a** | 驗證 Scale Up（12 vCPU + 4 containers）能否突破 2,661 req/s ceiling | 單一 Podman VM 的 CPU/網路是架構上限；加 container 不等於加資源 |
 
 ---
 
@@ -242,6 +243,31 @@ location = /api/qr/create {
 - Nginx `limit_req_zone` → FastAPI route dependency
 - Global middleware 對所有請求加 overhead（-25%）→ dependency 只掛 create route，redirect 零負擔
 - Redis fixed-window counter：`ratelimit:create:{ip}:{unix_second}`，max=60/s（等效 rate=20 burst=40）
+
+---
+
+### Phase 11a — Scale Up 驗證：單機 ceiling 確認
+
+**實驗目標：** 12 vCPU + 4 app containers，能否突破 2,661 req/s ceiling。
+
+**測試結果：**
+
+| 配置 | workers（total）| throughput（peak） |
+|------|-----------------|-------------------|
+| Phase 9（2 containers × 6 workers） | 12 | 2,661 req/s |
+| 11a 初測（4 containers × 6 workers，24 total） | 24 | 2,173 req/s（退步！）|
+| 11a 修正（4 containers × 4 workers，16 total） | 16 | ~2,550 req/s |
+
+**關鍵教訓：單一 VM 內加 containers 是「虛假的橫向擴充」**
+
+- 所有 containers 共享同一 VM 的 CPU 和 Podman bridge network
+- 過多 Python workers（24）造成 context switching 開銷超過其帶來的並發效益
+- peak 仍在 2,500–2,600 req/s，與 Phase 9 相同天花板
+- 真正突破需要 **多台主機**（Phase 11b）
+
+**附帶修正：** k6 setup 的 Rate Limit 陷阱
+- setup() 循序建立 500 個 token，發送速率超 60/s → 只 seed 了 58 tokens
+- 加入 `sleep(0.025)` 降速至 ~40 req/s → 340 tokens 成功建立
 
 ---
 

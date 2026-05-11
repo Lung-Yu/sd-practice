@@ -23,8 +23,11 @@ services:
 
   redis:
     image: docker.io/redis:7-alpine
+    command: redis-server --appendonly yes --appendfsync everysec
     ports:
       - "6479:6379"
+    volumes:
+      - redis_data:/data
 
   pgbouncer:
     image: docker.io/edoburu/pgbouncer:latest
@@ -103,3 +106,4 @@ services:
 volumes:
   pg_data:
   grafana_data:
+  redis_data:

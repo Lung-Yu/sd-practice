@@ -6,6 +6,7 @@ services:
       -c synchronous_commit=off
       -c checkpoint_completion_target=0.9
       -c wal_buffers=16MB
+      -c shared_buffers=256MB
     environment:
       POSTGRES_DB: qrcode
       POSTGRES_USER: qruser

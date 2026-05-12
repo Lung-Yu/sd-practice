@@ -13,6 +13,13 @@ sub vcl_recv {
     # Strip cookies so they don't prevent caching
     unset req.http.Cookie;
 
+    if (req.method == "PURGE") {
+        if (req.http.X-Purge-Token != "internal-purge-secret") {
+            return (synth(405, "Not allowed"));
+        }
+        return (purge);
+    }
+
     # Only cache GET requests on the redirect path /r/<token>
     if (req.method == "GET" && req.url ~ "^/r/") {
         return (hash);
@@ -20,6 +27,10 @@ sub vcl_recv {
 
     # Everything else (POST /api/qr/create, analytics, etc.) bypasses cache
     return (pass);
+}
+
+sub vcl_purge {
+    return (synth(200, "Purged"));
 }
 
 sub vcl_backend_response {

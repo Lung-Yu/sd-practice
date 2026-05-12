@@ -122,6 +122,7 @@ async def update_qr(token: str, req: UpdateRequest, db: AsyncSession = Depends(g
         await cache.delete_cached_url(token)
 
     await db.commit()
+    await cache.purge_varnish_cache(token)
     await db.refresh(mapping)
     return mapping
 
@@ -132,6 +133,7 @@ async def delete_qr(token: str, db: AsyncSession = Depends(get_db)):
     mapping.is_deleted = True
     await db.commit()
     await cache.delete_cached_url(token)
+    await cache.purge_varnish_cache(token)
     return {"detail": "Deleted"}
 
 

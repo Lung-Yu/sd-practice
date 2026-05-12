@@ -61,3 +61,20 @@ async def enqueue_scan(token: str, user_agent: str, ip: str) -> None:
             },
             maxlen=100000,
         )
+
+
+async def purge_varnish_cache(token: str) -> bool:
+    """Send PURGE request to Varnish for /r/<token>. Returns True on success."""
+    import httpx
+    import os
+    varnish_url = os.getenv("VARNISH_URL", "http://varnish:80")
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.request(
+                "PURGE",
+                f"{varnish_url}/r/{token}",
+                headers={"X-Purge-Token": "internal-purge-secret"},
+            )
+            return resp.status_code == 200
+    except Exception:
+        return False

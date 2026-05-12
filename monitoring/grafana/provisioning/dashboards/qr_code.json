@@ -312,6 +312,30 @@
           { "matcher": { "id": "byName", "options": "received" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] }
         ]
       }
+    },
+
+    {
+      "id": 201,
+      "title": "Total QR Codes Created",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 50 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "short"
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(qr_codes_created_total)",
+          "legendFormat": "Total Created",
+          "refId": "A"
+        }
+      ]
     }
 
   ]

@@ -1,3 +1,12 @@
+version: "3.9"
+
+# Shared monitoring network — start root docker-compose.monitoring.yml first.
+# The network is auto-created by scripts/start.sh if monitoring isn't running.
+networks:
+  sd_monitoring:
+    name: sd_monitoring
+    external: true
+
 services:
   postgres:
     image: docker.io/postgres:16-alpine
@@ -68,6 +77,9 @@ services:
 
   app1:
     build: ./scaffold
+    networks:
+      - default
+      - sd_monitoring
     environment:
       - DATABASE_URL=postgresql+asyncpg://qruser:qrpass@pgbouncer:5432/qrcode
       - READ_DATABASE_URL=postgresql+asyncpg://qruser:qrpass@postgres_replica:5432/qrcode
@@ -82,6 +94,9 @@ services:
 
   app2:
     build: ./scaffold
+    networks:
+      - default
+      - sd_monitoring
     environment:
       - DATABASE_URL=postgresql+asyncpg://qruser:qrpass@pgbouncer:5432/qrcode
       - READ_DATABASE_URL=postgresql+asyncpg://qruser:qrpass@postgres_replica:5432/qrcode
@@ -96,6 +111,9 @@ services:
 
   app3:
     build: ./scaffold
+    networks:
+      - default
+      - sd_monitoring
     environment:
       - DATABASE_URL=postgresql+asyncpg://qruser:qrpass@pgbouncer:5432/qrcode
       - READ_DATABASE_URL=postgresql+asyncpg://qruser:qrpass@postgres_replica:5432/qrcode
@@ -110,6 +128,9 @@ services:
 
   app4:
     build: ./scaffold
+    networks:
+      - default
+      - sd_monitoring
     environment:
       - DATABASE_URL=postgresql+asyncpg://qruser:qrpass@pgbouncer:5432/qrcode
       - READ_DATABASE_URL=postgresql+asyncpg://qruser:qrpass@postgres_replica:5432/qrcode
@@ -169,30 +190,7 @@ services:
       - nginx-site1
       - nginx-site2
 
-  prometheus:
-    image: docker.io/prom/prometheus:latest
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--web.enable-remote-write-receiver"
-    ports:
-      - "9190:9090"
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-
-  grafana:
-    image: docker.io/grafana/grafana:latest
-    ports:
-      - "3100:3000"
-    volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - grafana_data:/var/lib/grafana
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-    depends_on:
-      - prometheus
-
 volumes:
   pg_data:
-  grafana_data:
   redis_data:
   pg_replica_data:

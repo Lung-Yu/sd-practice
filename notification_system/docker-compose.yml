@@ -1,7 +1,17 @@
 version: "3.9"
+
+# Shared monitoring network — start root docker-compose.monitoring.yml first.
+# The network is auto-created by scripts/start.sh if monitoring isn't running.
+networks:
+  sd_monitoring:
+    name: sd_monitoring
+    external: true
+
 services:
   notification-api:
     build: .
+    networks:
+      - sd_monitoring
     ports:
       - "8000:8000"
     env_file:
@@ -9,32 +19,3 @@ services:
     environment:
       - FAILURE_RATE=${FAILURE_RATE:-0.20}
       - MAX_RETRIES=${MAX_RETRIES:-3}
-
-  prometheus:
-    image: prom/prometheus:v2.52.0
-    ports:
-      - "9090:9090"
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --web.enable-remote-write-receiver
-      - --storage.tsdb.retention.time=1h
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    profiles:
-      - monitoring
-
-  grafana:
-    image: grafana/grafana:11.0.0
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
-      - GF_AUTH_DISABLE_LOGIN_FORM=true
-    volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    depends_on:
-      - prometheus
-    profiles:
-      - monitoring

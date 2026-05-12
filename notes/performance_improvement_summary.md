@@ -217,6 +217,7 @@ location = /api/qr/create {
 | **Phase 10** | Rate limit 從 Nginx → FastAPI dependency（Middleware 陷阱） | Python workers 是唯一剩餘瓶頸；LB 層換不動它 |
 | **Phase 11a** | 驗證 Scale Up（12 vCPU + 4 containers）能否突破 2,661 req/s ceiling | 單一 Podman VM 的 CPU/網路是架構上限；加 container 不等於加資源 |
 | **Phase 11b** | 驗證三層 LB 路由正確性（GLB → site LB → app） | 單 VM 無法驗證效能水平擴展；需要真實多主機環境 |
+| **Phase 11c** | Varnish CDN 快取 302，突破單機 app ceiling | Cache purge 機制需處理 expires_at / URL 更新場景 |
 
 ---
 
@@ -244,6 +245,23 @@ location = /api/qr/create {
 - Nginx `limit_req_zone` → FastAPI route dependency
 - Global middleware 對所有請求加 overhead（-25%）→ dependency 只掛 create route，redirect 零負擔
 - Redis fixed-window counter：`ratelimit:create:{ip}:{unix_second}`，max=60/s（等效 rate=20 burst=40）
+
+---
+
+### Phase 11c — Varnish CDN：5,000 QPS 目標達成
+
+**結果：Peak ~5,100 req/s，p50 = 0.202ms（HIT），所有 threshold 通過 ✓**
+
+Varnish 將 `GET /r/<token>` 的 302 responses 快取 60s。Cache HIT = 記憶體 hash lookup，
+繞過 nginx / app / Redis 整個路徑。500 tokens 在測試開始後 < 1 秒全暖，後續 > 99.9% 為 HIT。
+
+| 方案 | Peak QPS | p50 |
+|------|---------|-----|
+| 單機 app（Phase 9）| ~2,600 | 29ms |
+| 真實多主機 2 sites（理論）| ~5,200 | 29ms |
+| 單機 + Varnish CDN（Phase 11c）| **~5,100（實測）** | **0.202ms** |
+
+CDN 在不增加 app 主機的情況下達成 5,000 QPS，是讀多寫少工作負載的最高性價比擴展手段。
 
 ---
 

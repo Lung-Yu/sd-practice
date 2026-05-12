@@ -1,50 +1,46 @@
-# QR Code Generator — Exercise
+# System Design Practice
 
-## How to Use
+A collection of hands-on system design exercises. Each topic is an independent git repo with its own infrastructure, scaffold, and notes.
 
-1. Read `PROMPT.md`
-2. Answer the Design Questions (write your answers directly in `PROMPT.md`)
-3. Build the prototype:
-   - **Challenge Track:** Build from scratch using `PROMPT.md` as your spec
-   - **Guided Track:** Go to `scaffold/`, fill in the TODOs
-4. Verify with the curl tests at the bottom of `PROMPT.md`
-5. Bring your Design Questions answers to live session for discussion
+## Exercises
 
-## Choose Your Track
+| # | Topic | Status | Key Concepts |
+|---|-------|--------|--------------|
+| 1 | [qr_code_generator](./qr_code_generator/) | ✅ Complete | REST API, PostgreSQL, Nginx, Varnish CDN, HAProxy, Prometheus/Grafana |
+| 2 | [notification_system](./notification_system/) | 🔨 In Progress | Async delivery, fan-out, queues, rate limiting, retry, user preferences |
 
-**Challenge Track** — You decide the architecture, file structure, and implementation. Any language/framework is OK (Python + FastAPI recommended). Read `PROMPT.md` to get started.
+## How Each Exercise Works
 
-**Guided Track** — File structure and boilerplate are provided. Fill in the core logic marked with `TODO`. Go to `scaffold/` and follow the instructions below.
+Every exercise follows the same structure:
 
-## Guided Track Setup
-
-**Prerequisite:** Python 3.10 or higher
-
-```bash
-cd scaffold
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+```
+<topic>/
+├── PROMPT.md          # Design questions + system requirements + curl verification tests
+├── README.md          # Setup instructions and track guide
+├── docker-compose.yml # Full infrastructure (DB, cache, app, worker, monitoring)
+└── scaffold/          # Guided track: fill in the TODOs
+    ├── app/           # FastAPI application
+    └── init.sql       # Database schema
 ```
 
-### Files to Fill In
+### Two Tracks
 
-| File | TODO | Design Decision |
-|------|------|-----------------|
-| `app/token_gen.py` | `generate_token()` | How to generate unique, URL-safe short tokens |
-| `app/url_validator.py` | `validate_url()` | URL normalization and malicious URL blocking |
-| `app/routes.py` | `redirect()` | Cache → DB lookup → 410/404 fallback flow |
+**Challenge Track** — Read `PROMPT.md`, answer the design questions, then build from scratch.
 
-### Run and Verify
+**Guided Track** — Go to `scaffold/`, fill in the TODO-marked functions. The structure and boilerplate are already there.
 
-```bash
-uvicorn app.main:app --reload
+## Directory Layout
+
 ```
-
-Then run the verification tests from `PROMPT.md`.
-
-## Bonus Challenges
-
-- Build a simple frontend (input URL → display QR code image)
-- Add rate limiting to the create endpoint
-- Add expiration support with automatic 410 responses
+sd-practice/
+├── README.md                     ← You are here
+├── qr_code_generator/            ← Exercise 1 (own git repo)
+│   ├── PROMPT.md
+│   ├── docker-compose.yml
+│   ├── scaffold/
+│   └── notes/                    ← Phase-by-phase experiment notes
+└── notification_system/          ← Exercise 2 (own git repo)
+    ├── PROMPT.md
+    ├── docker-compose.yml
+    └── scaffold/
+```

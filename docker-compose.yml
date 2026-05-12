@@ -94,15 +94,59 @@ services:
       pgbouncer:
         condition: service_started
 
-  nginx:
+  app3:
+    build: ./scaffold
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://qruser:qrpass@pgbouncer:5432/qrcode
+      - READ_DATABASE_URL=postgresql+asyncpg://qruser:qrpass@postgres_replica:5432/qrcode
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      pgbouncer:
+        condition: service_started
+
+  app4:
+    build: ./scaffold
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://qruser:qrpass@pgbouncer:5432/qrcode
+      - READ_DATABASE_URL=postgresql+asyncpg://qruser:qrpass@postgres_replica:5432/qrcode
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      pgbouncer:
+        condition: service_started
+
+  nginx-site1:
+    image: docker.io/nginx:alpine
+    volumes:
+      - ./nginx/nginx-site1.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app1
+      - app2
+
+  nginx-site2:
+    image: docker.io/nginx:alpine
+    volumes:
+      - ./nginx/nginx-site2.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app3
+      - app4
+
+  nginx-global:
     image: docker.io/nginx:alpine
     ports:
       - "8100:80"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/nginx-global.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      - app1
-      - app2
+      - nginx-site1
+      - nginx-site2
 
   prometheus:
     image: docker.io/prom/prometheus:latest

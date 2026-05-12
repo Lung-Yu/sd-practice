@@ -216,6 +216,7 @@ location = /api/qr/create {
 | **Phase 9** | Redis 重啟資料丟失；analytics 打 Primary；create 濫用；Nginx TCP overhead | UNLOGGED ⊕ Replication 不相容（優化之間的相依性） |
 | **Phase 10** | Rate limit 從 Nginx → FastAPI dependency（Middleware 陷阱） | Python workers 是唯一剩餘瓶頸；LB 層換不動它 |
 | **Phase 11a** | 驗證 Scale Up（12 vCPU + 4 containers）能否突破 2,661 req/s ceiling | 單一 Podman VM 的 CPU/網路是架構上限；加 container 不等於加資源 |
+| **Phase 11b** | 驗證三層 LB 路由正確性（GLB → site LB → app） | 單 VM 無法驗證效能水平擴展；需要真實多主機環境 |
 
 ---
 

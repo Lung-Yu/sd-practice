@@ -15,23 +15,23 @@ Answer these before you start coding:
 
 1. **Sync vs Async:** Should `POST /send` block until delivery completes, or return a pending ID immediately and deliver in the background? What are the trade-offs for latency, reliability, and API simplicity?
 
-->
+-> Sync (reliability is more important), latency low as possible
 
 2. **Status Lifecycle:** What states does a notification go through from creation to final outcome? Draw the state machine (e.g. pending → ? → ?). What triggers each transition?
 
-->
+->  must has aggreate service for deduplicate notification data
 
 3. **Channel Abstraction:** Email, SMS, and push have different APIs and failure modes. How do you model them so adding a fourth channel later requires minimal code changes?
 
-->
+-> support muti-channel , but current project is demo sample can simluate on dashboard or api to see result 
 
 4. **Simulated Failure:** Real channels fail intermittently. How will you simulate this? What failure rate is realistic per channel, and how does a caller distinguish "not yet delivered" from "permanently failed"?
 
-->
+-> add retry process
 
 5. **Idempotency:** If the caller sends the exact same notification twice (network retry), should the system create two records or deduplicate? What key would you use to detect a duplicate?
 
-->
+-> user message has topic and content (like FCM service )，i use hash function for deduplicate. hash(user_id, message_topic, message_content)
 
 ## Verification
 

@@ -1,0 +1,14 @@
+version: "3.9"
+services:
+  notification-api:
+    env_file:
+      - k6s/.env.loadtest
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --workers
+      - "4"

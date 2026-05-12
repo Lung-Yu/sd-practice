@@ -653,6 +653,89 @@ FORMULA:
 
 ---
 
+## 6. CDN 層分析
+
+### 6.1 CDN 效益公式
+
+**有效 throughput（考慮 cache hit rate）：**
+
+```
+有效吞吐量 = (hit_rate × CDN_throughput) + ((1 - hit_rate) × origin_throughput)
+
+本專案帶入（Phase 11c）：
+  hit_rate        ≈ 0.999（500 tokens 快速全暖）
+  CDN_throughput  = 5,100 req/s（Varnish HIT）
+  origin_throughput = 2,600 req/s（app path）
+  有效吞吐量 = (0.999 × 5100) + (0.001 × 2600) = 5094.9 + 2.6 ≈ 5,097 req/s ✓
+```
+
+**Cache 熱身時間估算：**
+
+```
+warm_up_requests = unique_token_count
+warm_up_time_sec = unique_token_count / origin_throughput
+
+本專案帶入：500 tokens / 2,600 req/s ≈ 0.19 秒
+→ 測試開始後 < 0.2 秒快取全暖，後續全為 HIT ✓
+```
+
+**CDN 所需記憶體估算：**
+
+```
+memory_per_entry = headers(~200B) + body(≈0B for 302) + metadata(~56B) ≈ 256B
+cache_memory = active_tokens × memory_per_entry
+
+本專案帶入：500 × 256B = 128KB（遠小於 256MB 配置）
+生產估算（1M active tokens）：1,000,000 × 256B = 256MB ← 正好是我們的配置上限
+```
+
+### 6.2 何時 CDN 效益最大
+
+| 條件 | CDN 效益 |
+|------|---------|
+| 相同 URL 被大量重複請求 | 最大（hit_rate → 1）|
+| URL 穩定不變（無 expires_at 或很長 TTL）| 最大 |
+| 回應體很小（如 302 只有 Location header）| 最大（快取成本最低） |
+| 每個請求 URL 都唯一 | 最小（hit_rate → 0）|
+| URL 頻繁更新（1 秒內就失效）| 反效果（MISS 開銷 > 省去的 origin 查詢）|
+
+**結論：QR code redirect 是 CDN 的理想場景** — URL 穩定、回應小、access pattern 高度重複（熱門 QR code 被掃描成千上萬次）。
+
+### 6.3 CDN 的必要配套：PURGE 機制
+
+在本系統中，`UrlMapping` model 有 `expires_at` 欄位。若 TTL=60s 期間 QR code 到期，
+Varnish 仍會返回舊快取的 302（正確性問題）。
+
+**生產解法選項：**
+
+| 方案 | 實作 | 取捨 |
+|------|------|------|
+| 主動 PURGE | 在 `expires_at` 更新時發 `PURGE /r/<token>` | 即時準確，需要 PURGE endpoint 配置 |
+| 短 TTL | TTL = min(expires_at - now, 60s) | 不需 PURGE，但 MISS 率更高 |
+| `Cache-Control: max-age` | App 在 302 response 加 header | CDN 自動尊重，最標準做法 |
+
+**最佳實踐（CloudFront / CDN 通用）：**
+```python
+# redirect handler 加入動態 Cache-Control
+remaining = expires_at - datetime.now() if expires_at else None
+ttl = min(int(remaining.total_seconds()), 3600) if remaining else 3600
+return RedirectResponse(
+    url=url,
+    status_code=302,
+    headers={"Cache-Control": f"public, max-age={ttl}"}
+)
+```
+
+### 6.4 CDN vs. 多主機 的選擇
+
+| 擴展方式 | 成本 | 適用 | 限制 |
+|---------|------|------|------|
+| CDN（Varnish / CloudFront）| 記憶體 ≈ 256MB | read-heavy，URL 穩定 | 需 PURGE；create 不受益 |
+| 多主機（加 site）| 1 台 VM（CPU + memory）| write-heavy，或 URL 多樣 | 需 DB/Redis 擴展 |
+| 兩者組合 | 最高 | 任何流量類型 | 維運複雜度最高 |
+
+---
+
 ## 附錄：本專案實測數據彙整
 
 | Phase | 核心改動 | redirect req/s | create p50 | create req/s |
@@ -668,9 +751,14 @@ FORMULA:
 | Phase 8 | sync_commit=off, pool 調優 | 1,731（redirect-only） | **42ms** | **631** |
 | Phase 9 | 8 vCPU, keepalive, AOF, Replica | **2,661** | 42ms | 630 |
 | Phase 10 | Rate limit → dependency（LB 不變） | 2,661 | 42ms | 630 |
+| Phase 11a | 12 vCPU + 4 containers × 4 workers | ~2,550（peak）| 42ms | 630 |
+| Phase 11b | 三層 LB（單 VM 模擬，資源共享）| 931（模擬限制）| — | — |
+| Phase 11c | Varnish CDN（HIT path）| **~5,100（peak）**，p50=0.202ms | — | — |
 
-> Phase 1~7 的 redirect 數字為混合流量下的 redirect 部分估算值
+> Phase 1~7 的 redirect 數字為混合流量下的 redirect 部分估算值  
+> Phase 11b 的數字是單 VM 模擬限制；真實多主機理論值 ~5,200 req/s  
+> Phase 11c 的 peak 是在 hold@6000 stage 60 秒窗口的實測值
 
 ---
 
-*最後更新：2026-05-12*
+*最後更新：2026-05-12（含 Phase 11a/11b/11c CDN 章節）*

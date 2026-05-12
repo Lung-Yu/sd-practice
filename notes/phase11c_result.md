@@ -198,3 +198,7 @@ CDN 的邊際成本極低：快取 1M 個 302 responses ≈ 1M × 256 bytes = 25
 | redirect p50（MISS / origin path）| ~40ms |
 | App 容器負載（HIT 期間）| 接近閒置 |
 | 下一步 | Phase 11d：100M+ DAU 規模估算文件 |
+
+## Commits
+
+- `80125b9` — `feat(phase11c): Varnish CDN achieves 5000 QPS — 5100 req/s peak, p50=0.202ms`

@@ -185,4 +185,4 @@ GLB（nginx 或 AWS ALB）
 
 ## Commits
 
-- `（本 Phase commit）` — feat(phase11b): multi-site 3-tier LB routing verification
+- `fafd263` — `feat(phase11b): multi-site 3-tier LB routing verification`

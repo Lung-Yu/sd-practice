@@ -29,6 +29,14 @@ sub vcl_recv {
     return (pass);
 }
 
+sub vcl_hash {
+    # Hash only on URL, not Host — ensures PURGE from internal network
+    # (Host: varnish:80) hits the same cache object as external clients
+    # (Host: localhost:8200 or the public domain).
+    hash_data(req.url);
+    return (lookup);
+}
+
 sub vcl_purge {
     return (synth(200, "Purged"));
 }

@@ -1,201 +1,81 @@
-# Notification System — Design Exercise
+# Notification System Prototype
 
-## System Overview
+## System Requirements
 
-Build a notification service that delivers messages to users across multiple channels
-(Email, SMS, Push). The system must handle high throughput, tolerate channel failures,
-and respect per-user delivery preferences.
-
----
-
-## Functional Requirements
-
-Answer: which of these will your system support?
-
-- [ ] Send a notification to a single user via a specified channel
-- [ ] Send a notification to multiple users (broadcast / fan-out)
-- [ ] Support multiple channels: Email, SMS, Push
-- [ ] Support notification types: transactional, marketing, system alert
-- [ ] Track delivery status per notification (pending → sent / failed)
-- [ ] Retry failed deliveries
-- [ ] User can opt-out of specific channels or notification types
-- [ ] Notification templates with variable substitution
-- [ ] Priority queue (urgent alerts bypass marketing queue)
-- [ ] Scheduled / delayed delivery
-
----
-
-## Non-Functional Requirements
-
-Define your targets before designing:
-
-| Property | Your Target | Notes |
-|----------|------------|-------|
-| API response latency (p99) | | e.g. < 100ms (fire-and-forget) or < 2s (wait for ack) |
-| Notification throughput | | e.g. 100k/min peak |
-| Delivery guarantee | | at-least-once / at-most-once / exactly-once |
-| Availability | | e.g. 99.9% |
-| Max acceptable delay | | how long before a sent notification must be delivered |
-| Data retention | | how long to keep delivery records |
-
----
+Build a notification service where:
+- Callers send a notification to a user via a specified channel (email, SMS, push)
+- Supported channels are simulated — no real credentials needed, just log to stdout
+- Each notification has a status that transitions as delivery progresses
+- If the channel fails to deliver, the failure is recorded
+- Callers can query the status of any notification by ID
 
 ## Design Questions
 
-Answer these before writing any code. The trade-offs you choose here determine the architecture.
+Answer these before you start coding:
 
-### 1. Sync vs Async Delivery
+1. **Sync vs Async:** Should `POST /send` block until delivery completes, or return a pending ID immediately and deliver in the background? What are the trade-offs for latency, reliability, and API simplicity?
 
-Should `POST /send` block until the notification is delivered, or return immediately with a pending ID?
+->
 
-- **Sync**: caller knows outcome immediately, but latency is tied to the slowest channel (SMTP can take seconds)
-- **Async**: fast API response, but caller must poll or use webhooks to know the result
+2. **Status Lifecycle:** What states does a notification go through from creation to final outcome? Draw the state machine (e.g. pending → ? → ?). What triggers each transition?
 
-→ Your choice and reasoning:
+->
 
-### 2. Queue / Worker Architecture
+3. **Channel Abstraction:** Email, SMS, and push have different APIs and failure modes. How do you model them so adding a fourth channel later requires minimal code changes?
 
-What sits between the API and the channel providers?
+->
 
-- **No queue**: API calls channel provider directly (simple, no retry, fails if provider is down)
-- **In-process queue** (e.g. asyncio tasks): easy, but lost on restart
-- **Redis queue** (e.g. RQ / list + BLPOP): durable, single-machine
-- **Message broker** (Kafka, RabbitMQ): durable, distributed, ordered partitions, replay
+4. **Simulated Failure:** Real channels fail intermittently. How will you simulate this? What failure rate is realistic per channel, and how does a caller distinguish "not yet delivered" from "permanently failed"?
 
-→ Your choice and reasoning:
+->
 
-### 3. Fan-out Strategy
+5. **Idempotency:** If the caller sends the exact same notification twice (network retry), should the system create two records or deduplicate? What key would you use to detect a duplicate?
 
-When sending to 1 million users (e.g. marketing blast):
-
-- **Write-time fan-out**: at send time, enqueue one job per user immediately → high write throughput needed, fast per-user delivery
-- **Read-time fan-out**: store one broadcast record, each worker reads and expands → lower write load, but more read complexity
-
-→ Your choice and reasoning:
-
-### 4. Delivery Guarantee
-
-If the worker crashes after the channel provider accepted the message but before you mark it `sent`:
-
-- **At-least-once**: re-enqueue on crash → user may receive duplicates; needs idempotency key at provider level
-- **At-most-once**: mark sent before delivering → no duplicates, but may lose messages on crash
-- **Exactly-once**: two-phase commit or idempotency + deduplication → complex, slow
-
-→ Your choice and reasoning:
-
-### 5. Rate Limiting
-
-Prevent spamming a single user too many notifications per minute:
-
-- **Token bucket**: smooth out bursts, allows short spikes
-- **Fixed window counter** (INCR/EXPIRE in Redis): simple, but allows 2× burst at window boundary
-- **Sliding window** (sorted set in Redis): accurate, slightly more Redis ops
-
-→ Where do you enforce limits (API layer vs worker)? Which algorithm?
-
-### 6. Template Rendering: When?
-
-- **At API time**: render before enqueueing → payload is self-contained, no template lookup in worker
-- **At worker time**: store template ID + params → smaller queue payload, but worker needs access to template store
-
-→ Your choice and reasoning:
-
-### 7. User Preferences Check: Where?
-
-- **At API layer**: reject immediately if user opted out → saves queue space, but preferences must be fast to query
-- **At worker layer**: check before delivering → decoupled, but wastes queue capacity on skipped jobs
-
-→ Your choice and reasoning:
-
-### 8. Channel Fallback
-
-If the primary channel fails (e.g. SMS provider down), should the system:
-
-- **Retry same channel** with backoff: simpler, respects user's channel preference
-- **Fallback to secondary channel**: higher delivery rate, but may surprise the user
-
-→ Your choice and reasoning:
-
-### 9. Delivery Status: How Does the Caller Know?
-
-- **Polling**: `GET /notifications/{id}` — simple, adds load
-- **Webhook**: caller provides a callback URL — low latency, but caller must expose an endpoint
-- **Both**: flexible, standard approach
-
-→ Your choice and reasoning:
-
----
-
-## API Design
-
-Sketch your endpoints before building:
-
-```
-POST   /api/notifications/send          # enqueue a notification
-GET    /api/notifications/{id}          # get delivery status
-GET    /api/notifications/?user_id=X   # list for a user
-
-GET    /api/users/{id}/preferences      # get opt-in/out settings
-PUT    /api/users/{id}/preferences      # update settings
-```
-
-Do you need any other endpoints? Change the above if your requirements differ.
-
----
-
-## Data Model
-
-Sketch your tables / collections. At minimum consider:
-
-- `notifications` — one row per delivery attempt (what fields?)
-- `user_preferences` — opt-in/out (keyed by what?)
-- Do you need a separate `templates` table or keep templates in code?
-
----
+->
 
 ## Verification
 
-Your implementation should pass all of these:
+Your prototype should pass all of these:
 
 ```bash
-# Send a transactional notification
+# Send a notification
 curl -X POST http://localhost:8000/api/notifications/send \
   -H "Content-Type: application/json" \
-  -d '{"user_id": "u1", "channel": "email", "type": "transactional",
-       "template_id": "welcome", "template_params": {"name": "Alice", "code": "9999"}}'
-# → 200, {"notification_id": "...", "status": "pending"}
+  -d '{"user_id": "u1", "channel": "email", "message": "Your order has shipped."}'
+# → 200, {"notification_id": "...", "status": "..."}
 
-# Poll status until sent
-curl http://localhost:8000/api/notifications/{id}
-# → {"status": "sent", "sent_at": "..."}
+# Check status
+curl http://localhost:8000/api/notifications/{notification_id}
+# → 200, {"notification_id": "...", "user_id": "u1", "channel": "email",
+#          "status": "sent", "created_at": "...", "sent_at": "..."}
 
-# Opt out of marketing emails
-curl -X PUT http://localhost:8000/api/users/u1/preferences \
-  -H "Content-Type: application/json" \
-  -d '[{"channel": "email", "type": "marketing", "enabled": false}]'
-# → 200
-
-# Send marketing email — should be skipped
-curl -X POST http://localhost:8000/api/notifications/send \
-  -d '{"user_id": "u1", "channel": "email", "type": "marketing", ...}'
-# → notification_id returned, status eventually becomes "skipped"
-
-# Rate limit — send 6 emails in 1 minute (limit is 5)
-for i in $(seq 1 6); do curl -X POST .../send ...; done
-# → first 5 succeed, 6th returns 429 (if enforced at API) or status=rate_limited (if at worker)
-
-# Unknown template
-curl -X POST .../send -d '{"template_id": "nonexistent", ...}'
+# Unknown ID
+curl http://localhost:8000/api/notifications/nonexistent
 # → 404
-```
 
----
+# Failed delivery (trigger by simulating a failure)
+# status should be "failed", error field should be set
+curl http://localhost:8000/api/notifications/{failed_id}
+# → 200, {"status": "failed", "error": "..."}
+
+# List notifications for a user
+curl "http://localhost:8000/api/notifications/?user_id=u1"
+# → 200, [{"notification_id": "...", "status": "sent"}, ...]
+```
 
 ## Suggested Tech Stack
 
 Python + FastAPI recommended, but any language/framework is fine.
 
-External services to simulate (no real credentials needed):
-- Email → print to stdout with simulated failure rate
-- SMS → same
-- Push → same
+---
+
+## Later Phases (do not implement yet)
+
+These will be added progressively once the base works:
+- User opt-out preferences
+- Retry on failure with backoff
+- Per-user rate limiting
+- Notification templates
+- Fan-out to multiple recipients
+- Async worker queue (Redis / Kafka)
+- Monitoring and metrics

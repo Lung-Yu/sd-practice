@@ -1,7 +1,8 @@
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 
+from . import config
 from .delivery import deliver
 from .idempotency import compute_key
 from .metrics import idempotency_hits
@@ -13,7 +14,7 @@ router = APIRouter()
 
 
 @router.post("/send", status_code=202, response_model=SendResponse)
-def send_notification(req: SendRequest, background_tasks: BackgroundTasks) -> SendResponse:
+def send_notification(req: SendRequest) -> SendResponse:
     try:
         from .channels.registry import get_channel
         get_channel(req.channel)
@@ -34,8 +35,14 @@ def send_notification(req: SendRequest, background_tasks: BackgroundTasks) -> Se
         topic=req.topic,
         idempotency_key=key,
     )
-    store.save(notification)                        # persist as PENDING — visible immediately
-    background_tasks.add_task(deliver, notification)  # deliver after response is sent
+    store.save(notification)  # persist as PENDING — visible to GET immediately
+
+    if config.REDIS_URL:
+        from .queue import enqueue
+        enqueue(notification.notification_id)  # worker picks this up and delivers
+    else:
+        deliver(notification)  # in-memory fallback: synchronous delivery
+
     return SendResponse(notification_id=notification.notification_id, status=notification.status)
 
 

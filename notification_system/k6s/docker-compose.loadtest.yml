@@ -12,3 +12,10 @@ services:
       - "8000"
       - --workers
       - "4"
+
+  # 4 delivery workers compete on the same Redis consumer group.
+  # Each gets a unique consumer name from its container hostname.
+  # Scale with: podman-compose ... up --scale delivery-worker=4
+  delivery-worker:
+    env_file:
+      - k6s/.env.loadtest

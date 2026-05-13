@@ -33,3 +33,17 @@ services:
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       - redis
+
+  delivery-worker:
+    build: .
+    networks:
+      - sd_monitoring
+    env_file:
+      - .env
+    environment:
+      - FAILURE_RATE=${FAILURE_RATE:-0.20}
+      - MAX_RETRIES=${MAX_RETRIES:-3}
+      - REDIS_URL=redis://redis:6379/0
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      - redis

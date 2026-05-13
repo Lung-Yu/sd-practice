@@ -88,12 +88,45 @@ BackgroundTasks is the right *pattern* but wrong *implementation* when the servi
 
 ## NFR Improvement Scorecard
 
-| NFR | Before (baseline) | After Tier 1 | After Tier 2A | After Tier 2B (measured) |
-|-----|------------------|--------------|---------------|--------------------------|
-| POST p95 latency | unbounded (no timeout) | bounded by 5s timeout | 544 ms | 579 ms (worse — thread pool saturation) |
-| Throughput | ~1750 RPS | ~1750 RPS | ~1750 RPS | ~1767 RPS (no change — VU ceiling) |
-| Cross-worker 404s | ~10–20% | ~10–20% | 0% | 0% |
-| Idempotency | per-process only | per-process only | global (Redis) | global (Redis) |
-| Data durability | lost on restart | lost on restart | Redis AOF | Redis AOF |
-| Retry safety | thundering herd | exp. backoff + jitter | exp. backoff + jitter | exp. backoff + jitter |
-| Observability | none | Prometheus metrics | Prometheus metrics | Prometheus metrics |
+## Tier 2C: Separate Delivery Worker Container (Redis Streams)
+
+**Architecture change:**
+- HTTP workers: POST /send → save PENDING → `XADD notifications:delivery {notification_id}` → return 202 immediately
+- Delivery worker (`delivery-worker` container): `XREADGROUP` → `store.get(id)` → `deliver()` → `XACK`
+- Consumer group `delivery-workers`: Redis ensures each message is consumed by exactly one worker
+- Worker uses `socket.gethostname()` as consumer name → unique per container
+
+### Tier 2C k6 results
+
+| Metric | 2A (Redis store) | 2B (BackgroundTasks) | 2C (Stream worker) |
+|--------|-----------------|----------------------|--------------------|
+| POST /send p95 | 544 ms ❌ | 579 ms ❌ | **466 ms ✓** |
+| GET /{id} p95 | 462 ms ✓ | 516 ms ❌ | **450 ms ✓** |
+| List p95 | 466 ms ✓ | 519 ms ❌ | **455 ms ✓** |
+| Error rate | 0.00% ✓ | 0.00% ✓ | **0.00% ✓** |
+| Throughput | ~1750 RPS | ~1767 RPS | **~2070 RPS** |
+| All thresholds | ❌ 2 fail | ❌ 4 fail | **✓ ALL PASS** |
+
+### Why it worked: true process isolation
+
+The delivery worker is a **separate container** — isolated CPU, memory, and thread pool. HTTP path is now just:
+```
+POST /send → validate → idempotency check → Redis HSET (PENDING) → Redis XADD → return 202
+```
+Two cheap Redis ops, then done. `deliver()` never touches the HTTP thread pool.
+
+---
+
+## NFR Scorecard (all tiers)
+
+| NFR | Original | Tier 1 | Tier 2A | Tier 2B | Tier 2C |
+|-----|----------|--------|---------|---------|---------|
+| POST p95 latency | unbounded | bounded 5s | 544 ms ❌ | 579 ms ❌ | **466 ms ✓** |
+| Throughput | ~1750 RPS | ~1750 RPS | ~1750 RPS | ~1767 RPS | **~2070 RPS** |
+| All thresholds pass | ❌ | ❌ | ❌ | ❌ | **✓** |
+| Cross-worker 404s | ~10–20% | ~10–20% | 0% | 0% | **0%** |
+| Idempotency | per-process | per-process | global | global | **global** |
+| Durability | lost on restart | lost on restart | Redis AOF | Redis AOF | **Redis AOF** |
+| Retry safety | thundering herd | exp. backoff + jitter | ← | ← | **← same** |
+| Observability | none | Prometheus | Prometheus | Prometheus | **Prometheus** |
+| Delivery isolation | none | none | none | partial | **full (separate process)** |

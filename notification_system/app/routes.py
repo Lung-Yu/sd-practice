@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 
 from .delivery import deliver
 from .idempotency import compute_key
+from .metrics import idempotency_hits
 from .models import Notification
 from .schemas import NotificationDetail, NotificationSummary, SendRequest, SendResponse
 from .store import store
@@ -22,6 +23,7 @@ def send_notification(req: SendRequest) -> SendResponse:
     key = compute_key(req.user_id, req.topic, req.message)
     existing = store.get_by_key(key)
     if existing is not None:
+        idempotency_hits.inc()
         return SendResponse(notification_id=existing.notification_id, status=existing.status)
 
     notification = Notification(

@@ -1,0 +1,91 @@
+from datetime import datetime
+from typing import Optional
+
+import redis as redis_lib
+
+from .models import Notification, NotificationStatus
+
+_IDEMPOTENCY_TTL = 86_400  # 24 h
+
+
+def _serialize(n: Notification) -> dict:
+    return {
+        "notification_id": n.notification_id,
+        "user_id": n.user_id,
+        "channel": n.channel,
+        "message": n.message,
+        "topic": n.topic,
+        "idempotency_key": n.idempotency_key,
+        "status": n.status.value,
+        "created_at": n.created_at.isoformat(),
+        "sent_at": n.sent_at.isoformat() if n.sent_at else "",
+        "error": n.error or "",
+        "attempts": str(n.attempts),
+    }
+
+
+def _deserialize(d: dict) -> Notification:
+    return Notification(
+        notification_id=d["notification_id"],
+        user_id=d["user_id"],
+        channel=d["channel"],
+        message=d["message"],
+        topic=d["topic"],
+        idempotency_key=d["idempotency_key"],
+        status=NotificationStatus(d["status"]),
+        created_at=datetime.fromisoformat(d["created_at"]),
+        sent_at=datetime.fromisoformat(d["sent_at"]) if d.get("sent_at") else None,
+        error=d["error"] or None,
+        attempts=int(d["attempts"]),
+    )
+
+
+class RedisNotificationStore:
+    """
+    Drop-in replacement for NotificationStore backed by Redis.
+
+    Key layout:
+      notification:{id}           HASH  — full notification fields
+      idempotency:{sha256_key}    STRING (notification_id) TTL 24 h
+      user:{user_id}:notifications ZSET  scored by created_at unix timestamp
+    """
+
+    def __init__(self, url: str) -> None:
+        self._r = redis_lib.from_url(url, decode_responses=True)
+
+    # -- read ops (no locking needed; Redis handles concurrency) --------------
+
+    def get(self, notification_id: str) -> Optional[Notification]:
+        d = self._r.hgetall(f"notification:{notification_id}")
+        return _deserialize(d) if d else None
+
+    def get_by_key(self, idempotency_key: str) -> Optional[Notification]:
+        nid = self._r.get(f"idempotency:{idempotency_key}")
+        return None if nid is None else self.get(nid)
+
+    # -- write op: single pipeline → atomic from client's perspective ---------
+
+    def save(self, notification: Notification) -> None:
+        pipe = self._r.pipeline()
+        pipe.hset(f"notification:{notification.notification_id}", mapping=_serialize(notification))
+        pipe.set(
+            f"idempotency:{notification.idempotency_key}",
+            notification.notification_id,
+            ex=_IDEMPOTENCY_TTL,
+        )
+        pipe.zadd(
+            f"user:{notification.user_id}:notifications",
+            {notification.notification_id: notification.created_at.timestamp()},
+        )
+        pipe.execute()
+
+    # -- list: batch HGETALL via pipeline to avoid N round-trips --------------
+
+    def list_for_user(self, user_id: str) -> list[Notification]:
+        ids = self._r.zrange(f"user:{user_id}:notifications", 0, -1)
+        if not ids:
+            return []
+        pipe = self._r.pipeline()
+        for nid in ids:
+            pipe.hgetall(f"notification:{nid}")
+        return [_deserialize(d) for d in pipe.execute() if d]

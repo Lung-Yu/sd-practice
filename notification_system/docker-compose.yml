@@ -7,7 +7,18 @@ networks:
     name: sd_monitoring
     external: true
 
+volumes:
+  redis_data:
+
 services:
+  redis:
+    image: redis:7-alpine
+    networks:
+      - sd_monitoring
+    command: redis-server --save 60 1 --appendonly yes
+    volumes:
+      - redis_data:/data
+
   notification-api:
     build: .
     networks:
@@ -19,3 +30,6 @@ services:
     environment:
       - FAILURE_RATE=${FAILURE_RATE:-0.20}
       - MAX_RETRIES=${MAX_RETRIES:-3}
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis

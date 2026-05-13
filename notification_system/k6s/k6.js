@@ -72,7 +72,7 @@ export function setup() {
       { headers: { "Content-Type": "application/json" } }
     );
 
-    if (res.status === 200 || res.status === 201) {
+    if (res.status === 200 || res.status === 201 || res.status === 202) {
       try {
         const body = res.json();
         if (body && body.notification_id) {
@@ -120,7 +120,7 @@ function doPost() {
   );
   postSendDuration.add(res.timings.duration);
   const ok = check(res, {
-    "post /send status 200": (r) => r.status === 200 || r.status === 201,
+    "post /send status 2xx": (r) => r.status >= 200 && r.status < 300,
     "post /send has notification_id": (r) => {
       try { return !!r.json("notification_id"); } catch { return false; }
     },

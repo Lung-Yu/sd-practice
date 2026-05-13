@@ -43,4 +43,13 @@ class NotificationStore:
         return [self._by_id[nid] for nid in ids if nid in self._by_id]
 
 
-store = NotificationStore()
+def _make_store() -> "NotificationStore":
+    import os
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url:
+        from .store_redis import RedisNotificationStore
+        return RedisNotificationStore(redis_url)  # type: ignore[return-value]
+    return NotificationStore()
+
+
+store = _make_store()

@@ -13,9 +13,13 @@ services:
       - --workers
       - "4"
 
-  # 4 delivery workers compete on the same Redis consumer group.
-  # Each gets a unique consumer name from its container hostname.
+  # delivery-worker inherits loadtest env (FAILURE_RATE=0, MAX_RETRIES=1).
   # Scale with: podman-compose ... up --scale delivery-worker=4
   delivery-worker:
     env_file:
       - k6s/.env.loadtest
+
+  # nginx is unchanged in loadtest — it auto-discovers new notification-api
+  # replicas via DNS when scaled with --scale notification-api=N.
+  # k6 drives load through port 8080 (BASE_URL=http://localhost:8080).
+  nginx: {}

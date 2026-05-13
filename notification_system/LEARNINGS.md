@@ -170,3 +170,53 @@ Fixed-window counter in Redis:
 Verified: 110 rapid requests from one user → 10 rejections (exactly over the 100 limit).
 
 Metric: `rate_limit_hits_total` — alert on sustained 429 rate (signal of abuse or misconfigured client).
+
+---
+
+## Tier 3A: Nginx Load Balancer + Horizontal Scaling
+
+### Architecture
+
+```
+k6 (8080) → nginx → notification-api-1..4 (each: 4 uvicorn workers)
+                         ↓
+                     Redis (shared state)
+                         ↑
+              delivery-worker (1 container, Redis Stream consumer)
+```
+
+nginx config: `keepalive 64` (reuse TCP connections to backends), `proxy_http_version 1.1`, round-robin.
+
+### Benchmark comparison
+
+| Config | Workers | Throughput | POST p95 | GET p95 | All pass? |
+|--------|---------|------------|----------|---------|-----------|
+| 1 container, 1 worker/container (broken) | 1 | ~1473 RPS | 1.48s ❌ | 1.43s ❌ | No |
+| 1 container, 4 workers | 4 | ~2070 RPS | **466ms ✓** | 450ms ✓ | **Yes** |
+| 4 containers, 4 workers each + nginx | 16 | ~2362 RPS | 590ms ❌ | **332ms ✓** | No |
+
+### Key insight: READ vs WRITE scaling asymmetry
+
+**GET /{id}** scales linearly with more replicas (−26%: 450ms→332ms). Each replica fetches from Redis independently; more replicas = more parallel reads.
+
+**POST /send** gets WORSE under nginx at high concurrency (+27%: 466ms→590ms) because:
+1. nginx adds a connection hop (~1-2ms + queuing under peak load)
+2. At 5000 RPS target, all 600 VUs × connection pooling overhead compounds in the nginx→backend path
+3. Round-robin can't perfectly balance write pressure; a momentarily slow backend stalls its keepalive connections
+
+### The fix for POST at nginx scale
+
+- **`least_conn` upstream**: route to the backend with fewest active connections — avoids head-of-line blocking from a slow replica
+- **Async Python routes** (`async def` + `redis.asyncio`): eliminates thread pool entirely; POST returns in ~0.5ms (just 2 async Redis calls)
+- **gRPC internal**: skip nginx for internal paths; use nginx only for the public edge
+
+### Why nginx is still worth adding
+
+Even though POST p95 failed the 500ms threshold, nginx delivered:
+- Stable external endpoint regardless of how many backends are running
+- Zero-downtime rolling restarts (nginx re-routes while a container restarts)
+- `keepalive` reduces TCP handshake overhead by 60–80% vs plain reverse proxy
+- Health check endpoint (`/nginx-health`) for load balancer probes
+- Separation of concerns: TLS termination, rate limiting, request logging all move to nginx
+
+The right takeaway: nginx LB works well for READ-heavy workloads at these concurrency levels. For write-heavy or latency-critical paths, async code + connection pooling is the next lever.

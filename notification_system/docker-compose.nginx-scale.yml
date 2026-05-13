@@ -1,0 +1,65 @@
+# Demonstrates horizontal scaling: 4 independent API containers behind nginx.
+# Usage:
+#   podman-compose -f docker-compose.yml -f k6s/docker-compose.loadtest.yml \
+#                  -f docker-compose.nginx-scale.yml up -d --build
+#
+# k6 loadtest via nginx:
+#   BASE_URL=http://localhost:8080 k6 run k6s/k6.js
+version: "3.9"
+
+services:
+  # Rename the single API service to api-1 and add api-2..4 explicitly.
+  # Each has its own uvicorn process; nginx round-robins across them.
+  # All share the same Redis → stateless from the app's perspective.
+  notification-api-1:
+    build: .
+    networks:
+      - sd_monitoring
+    env_file:
+      - k6s/.env.loadtest
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+    depends_on:
+      - redis
+
+  notification-api-2:
+    build: .
+    networks:
+      - sd_monitoring
+    env_file:
+      - k6s/.env.loadtest
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+    depends_on:
+      - redis
+
+  notification-api-3:
+    build: .
+    networks:
+      - sd_monitoring
+    env_file:
+      - k6s/.env.loadtest
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+    depends_on:
+      - redis
+
+  notification-api-4:
+    build: .
+    networks:
+      - sd_monitoring
+    env_file:
+      - k6s/.env.loadtest
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+    depends_on:
+      - redis
+
+  # Override nginx to upstream all 4 named instances.
+  nginx:
+    volumes:
+      - ./nginx/notification-scale.conf:/etc/nginx/conf.d/default.conf:ro

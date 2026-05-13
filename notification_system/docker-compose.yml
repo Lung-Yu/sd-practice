@@ -47,3 +47,18 @@ services:
     command: ["python", "-m", "app.worker"]
     depends_on:
       - redis
+
+  # nginx — load balancer / reverse proxy in front of notification-api replicas.
+  # Dev:      1 API instance, accessed via :8080 (nginx) or :8000 (direct)
+  # Scaled:   podman-compose up --scale notification-api=4
+  #           nginx round-robins across replicas via DNS
+  nginx:
+    image: nginx:1.27-alpine
+    networks:
+      - sd_monitoring
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/notification.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - notification-api

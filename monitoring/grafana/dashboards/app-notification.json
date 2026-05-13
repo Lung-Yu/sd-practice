@@ -1,0 +1,209 @@
+{
+  "uid": "app-notification",
+  "title": "Notification Service — App Metrics",
+  "tags": ["notification", "app"],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "time": { "from": "now-15m", "to": "now" },
+  "timezone": "browser",
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Delivery Rate — SENT vs FAILED (per second)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 8 } }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(notifications_sent_total{status=\"SENT\"}[30s])) by (channel)",
+          "legendFormat": "SENT — {{channel}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(notifications_sent_total{status=\"FAILED\"}[30s])) by (channel)",
+          "legendFormat": "FAILED — {{channel}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Retry Rate by Channel (per second)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": { "mode": "fixed", "fixedColor": "#FF9830" },
+          "custom": { "lineWidth": 2, "fillOpacity": 8 }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(notification_retries_total[30s])) by (channel)",
+          "legendFormat": "{{channel}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Idempotency Hits (per second)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": { "mode": "fixed", "fixedColor": "#73BF69" },
+          "custom": { "lineWidth": 2, "fillOpacity": 8 }
+        }
+      },
+      "options": { "legend": { "displayMode": "hidden" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(idempotency_hits_total[30s])",
+          "legendFormat": "deduped/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Delivery Duration p50 / p95 / p99 by Channel",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.3 },
+              { "color": "red",    "value": 0.5 }
+            ]
+          }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "right" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(notification_delivery_duration_seconds_bucket[30s])) by (le, channel))",
+          "legendFormat": "p50 — {{channel}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(notification_delivery_duration_seconds_bucket[30s])) by (le, channel))",
+          "legendFormat": "p95 — {{channel}}",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(notification_delivery_duration_seconds_bucket[30s])) by (le, channel))",
+          "legendFormat": "p99 — {{channel}}",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Circuit Breaker Trips (per second)",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 17 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": { "mode": "fixed", "fixedColor": "#F2495C" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red",   "value": 0.01 }
+            ]
+          }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(circuit_breaker_trips_total[30s])) by (channel)",
+          "legendFormat": "{{channel}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Rate Limit Hits (per second)",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 17 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": { "mode": "fixed", "fixedColor": "#A352CC" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red",    "value": 10 }
+            ]
+          }
+        }
+      },
+      "options": { "legend": { "displayMode": "hidden" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(rate_limit_hits_total[30s])",
+          "legendFormat": "429/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Delivery Timeouts (per second)",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 17 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": { "mode": "fixed", "fixedColor": "#FF780A" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red",   "value": 0.1 }
+            ]
+          }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(delivery_timeouts_total[30s])) by (channel)",
+          "legendFormat": "{{channel}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

@@ -6,6 +6,17 @@ notifications_sent = Counter(
     ["channel", "status"],
 )
 
+circuit_breaker_trips = Counter(
+    "circuit_breaker_trips_total",
+    "Times a channel circuit breaker rejected a call (OPEN state)",
+    ["channel"],
+)
+
+rate_limit_hits = Counter(
+    "rate_limit_hits_total",
+    "Requests rejected by per-user rate limiter",
+)
+
 notification_delivery_seconds = Histogram(
     "notification_delivery_duration_seconds",
     "End-to-end delivery time per channel (all attempts combined)",

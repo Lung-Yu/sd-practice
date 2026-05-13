@@ -1,3 +1,4 @@
+import time
 import uuid
 
 from fastapi import APIRouter, HTTPException
@@ -5,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from . import config
 from .delivery import deliver
 from .idempotency import compute_key
-from .metrics import idempotency_hits
+from .metrics import idempotency_hits, rate_limit_hits
 from .models import Notification
 from .schemas import NotificationDetail, NotificationSummary, SendRequest, SendResponse
 from .store import store
@@ -13,8 +14,31 @@ from .store import store
 router = APIRouter()
 
 
+def _check_rate_limit(user_id: str) -> bool:
+    """Return True if the request is allowed; False if the user is over limit.
+
+    Uses a fixed-window counter in Redis:
+      key = ratelimit:{user_id}:{bucket}  (bucket = epoch // window_s)
+    INCR + conditional EXPIRE — two round-trips but no Lua needed.
+    """
+    if not config.REDIS_URL:
+        return True
+    from .queue import _get_client
+    r = _get_client()
+    bucket = int(time.time()) // config.RATE_LIMIT_WINDOW_S
+    key = f"ratelimit:{user_id}:{bucket}"
+    count = r.incr(key)
+    if count == 1:
+        r.expire(key, config.RATE_LIMIT_WINDOW_S)
+    return count <= config.RATE_LIMIT_PER_USER
+
+
 @router.post("/send", status_code=202, response_model=SendResponse)
 def send_notification(req: SendRequest) -> SendResponse:
+    if not _check_rate_limit(req.user_id):
+        rate_limit_hits.inc()
+        raise HTTPException(status_code=429, detail="rate limit exceeded — try again later")
+
     try:
         from .channels.registry import get_channel
         get_channel(req.channel)

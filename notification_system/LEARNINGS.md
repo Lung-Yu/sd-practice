@@ -130,3 +130,43 @@ Two cheap Redis ops, then done. `deliver()` never touches the HTTP thread pool.
 | Retry safety | thundering herd | exp. backoff + jitter | ← | ← | **← same** |
 | Observability | none | Prometheus | Prometheus | Prometheus | **Prometheus** |
 | Delivery isolation | none | none | none | partial | **full (separate process)** |
+
+---
+
+## Tier 3: Circuit Breaker, DLQ, Rate Limiting
+
+### Circuit Breaker (`app/circuit_breaker.py` + `channels/registry.py`)
+
+Hand-rolled state machine — no external dependency needed (~60 lines):
+
+```
+CLOSED → (N consecutive failures) → OPEN → (after recovery_seconds) → HALF_OPEN
+HALF_OPEN → (success) → CLOSED
+HALF_OPEN → (failure) → OPEN
+```
+
+Key insight: breakers live at **module level** in `registry.py` (`_BREAKERS` dict), not per-request. Each `get_channel()` call returns a `_ProtectedChannel` wrapping the same stateful breaker. This means state persists across all requests in a worker process.
+
+Without the CB, a channel degraded to 90% failure rate makes every delivery attempt wait for `MAX_RETRIES × ATTEMPT_TIMEOUT_S = 15s` before giving up. With CB, after 5 consecutive failures the circuit trips OPEN: all subsequent calls fail-fast in microseconds instead of seconds, protecting worker thread capacity.
+
+Metric: `circuit_breaker_trips_total{channel}` — alert when rate > 0.
+
+### Dead-Letter Queue (`app/queue.py` + `app/delivery.py`)
+
+When `deliver()` exhausts all retries, it pushes the notification_id to `notifications:dlq` (Redis List). Admin endpoints:
+- `GET /admin/dlq` → depth + sample peek (non-destructive LRANGE)
+- `POST /admin/dlq/retry?count=N` → pops N from DLQ, XADDs back to delivery stream
+
+This gives ops a requeue button without re-architecting the delivery path.
+
+### Per-User Rate Limiting (`app/routes.py`)
+
+Fixed-window counter in Redis:
+- Key: `ratelimit:{user_id}:{epoch // window_s}`
+- INCR + conditional EXPIRE (2 round-trips, no Lua)
+- Default: 100 requests / 60 seconds per user
+- Returns 429 on breach; increments `rate_limit_hits_total` prometheus counter
+
+Verified: 110 rapid requests from one user → 10 rejections (exactly over the 100 limit).
+
+Metric: `rate_limit_hits_total` — alert on sustained 429 rate (signal of abuse or misconfigured client).

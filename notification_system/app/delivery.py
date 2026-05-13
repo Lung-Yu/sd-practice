@@ -58,4 +58,9 @@ def deliver(notification: Notification) -> Notification:
     notification.error = last_error
     store.save(notification)
     notifications_sent.labels(channel=notification.channel, status="FAILED").inc()
+
+    if config.REDIS_URL:
+        from .queue import enqueue_dlq
+        enqueue_dlq(notification.notification_id)
+
     return notification

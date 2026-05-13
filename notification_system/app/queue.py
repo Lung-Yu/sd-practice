@@ -33,3 +33,34 @@ def ensure_group() -> None:
 
 def enqueue(notification_id: str) -> None:
     _get_client().xadd(STREAM_KEY, {"notification_id": notification_id})
+
+
+# ---------------------------------------------------------------------------
+# Dead-Letter Queue — notifications that exhausted all retries
+# ---------------------------------------------------------------------------
+
+DLQ_KEY = "notifications:dlq"
+
+
+def enqueue_dlq(notification_id: str) -> None:
+    _get_client().rpush(DLQ_KEY, notification_id)
+
+
+def dlq_length() -> int:
+    return int(_get_client().llen(DLQ_KEY))
+
+
+def dlq_retry_batch(count: int = 100) -> list[str]:
+    """Pop up to *count* IDs from the DLQ and re-enqueue them for delivery.
+    Returns the list of re-queued IDs."""
+    r = _get_client()
+    ids: list[str] = []
+    pipe = r.pipeline()
+    for _ in range(count):
+        pipe.lpop(DLQ_KEY)
+    results = pipe.execute()
+    for nid in results:
+        if nid:
+            r.xadd(STREAM_KEY, {"notification_id": nid})
+            ids.append(nid)
+    return ids

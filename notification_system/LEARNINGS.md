@@ -220,3 +220,56 @@ Even though POST p95 failed the 500ms threshold, nginx delivered:
 - Separation of concerns: TLS termination, rate limiting, request logging all move to nginx
 
 The right takeaway: nginx LB works well for READ-heavy workloads at these concurrency levels. For write-heavy or latency-critical paths, async code + connection pooling is the next lever.
+
+---
+
+## Tier 3B: Async Routes + Redis Readiness
+
+### Changes
+- All route handlers converted to `async def` with `redis.asyncio` client (pool size 100)
+- FastAPI startup event waits for Redis readiness (handles `BusyLoadingError` on AOF replay)
+- `least_conn` added to nginx scale config (avoids round-robin head-of-line blocking)
+
+### Results: single container, 4 workers, direct port 8000
+
+| Metric | 2C Sync | 3B Async | Change |
+|--------|---------|---------|--------|
+| POST /send p95 | 466ms ✓ | **283ms ✓** | −39% |
+| GET /{id} p95 | 450ms ✓ | **137ms ✓** | −69% |
+| List p95 | 455ms ✓ | **176ms ✓** | −61% |
+| Throughput | ~2070 RPS | **~3072 RPS** | +48% |
+| Error rate | 0.00% ✓ | 0.17% ✓ | — |
+
+Async routes remove the thread pool entirely for IO-bound paths. Each coroutine just suspends at the `await`, freeing the event loop to serve other requests — no thread context-switching overhead.
+
+### Results: 4 containers × 4 workers + nginx + least_conn
+
+| Metric | 3A (sync, round-robin) | 3B (async, least_conn) |
+|--------|----------------------|----------------------|
+| POST p95 | 590ms ❌ | 596ms ❌ |
+| GET p95 | 332ms ✓ | **234ms ✓** |
+| Error rate | 0.00% ✓ | **0.00% ✓** |
+| Throughput | ~2362 RPS | ~2060 RPS |
+
+### Key insight: async routes help single-container far more than multi-container
+
+Single container + async: **3072 RPS** (best result yet). Nginx-scale + async: **2060 RPS** (FEWER than single container).
+
+Why adding 4× compute with nginx gives FEWER RPS:
+1. nginx hop adds ~50–100ms latency to every request under high concurrency
+2. More containers = more Redis connection pools (20 uvicorn processes × 100+100 async connections = 4,000 potential connections); Redis connection management overhead grows
+3. Little's Law: the nginx latency increase raises VUs-needed above the 600-VU cap more than additional parallelism lowers average latency
+
+**The IO-bound scaling wall**: when the bottleneck is network round-trips to Redis (not CPU), adding more processes doesn't help. All 16 workers are waiting on the same Redis. More waiters = more queueing on the Redis connection pool, not more throughput.
+
+### BusyLoadingError root cause + fix
+
+Redis replays its AOF log on every restart. If API workers start before AOF replay completes, all Redis commands return `LOADING` → 500 errors. k6 `setup()` ran during this window → `seedIds = []` → all GET checks used fallback UUID → 500 (still loading) → 0% GET check success.
+
+Fix: `@app.on_event("startup")` blocks worker initialization until `redis.ping()` succeeds. Delivery worker already had this; now HTTP API workers do too.
+
+### What would actually fix POST p95 under nginx scale
+
+- **Redis cluster**: shard write load across multiple Redis nodes — eliminates single-Redis bottleneck
+- **Skip nginx for writes**: use DNS-based client-side load balancing (gRPC + service discovery) — removes nginx hop from the hot path  
+- **Vertical scale**: 1 large container + more uvicorn workers outperforms N small containers + nginx for IO-bound workloads at these RPS levels

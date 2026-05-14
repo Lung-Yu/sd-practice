@@ -7,6 +7,7 @@ Stream layout:
   Each worker uses socket.gethostname() as consumer name → unique per container.
 """
 import redis as _redis
+import redis.asyncio as _aioredis
 
 from . import config
 
@@ -14,6 +15,7 @@ STREAM_KEY = "notifications:delivery"
 GROUP_NAME = "delivery-workers"
 
 _client: _redis.Redis | None = None
+_async_client: _aioredis.Redis | None = None
 
 
 def _get_client() -> _redis.Redis:
@@ -31,8 +33,19 @@ def ensure_group() -> None:
         pass  # already exists
 
 
+def _get_async_client() -> _aioredis.Redis:
+    global _async_client
+    if _async_client is None:
+        _async_client = _aioredis.from_url(config.REDIS_URL, decode_responses=True, max_connections=100)
+    return _async_client
+
+
 def enqueue(notification_id: str) -> None:
     _get_client().xadd(STREAM_KEY, {"notification_id": notification_id})
+
+
+async def aenqueue(notification_id: str) -> None:
+    await _get_async_client().xadd(STREAM_KEY, {"notification_id": notification_id})
 
 
 # ---------------------------------------------------------------------------

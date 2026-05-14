@@ -42,6 +42,19 @@ class NotificationStore:
             ids = set(self._by_user.get(user_id, set()))  # snapshot while holding lock
         return [self._by_id[nid] for nid in ids if nid in self._by_id]
 
+    # -- async shims: in-memory ops are instant, no awaitable needed -----------
+    async def aget(self, notification_id: str) -> Optional[Notification]:
+        return self.get(notification_id)
+
+    async def aget_by_key(self, idempotency_key: str) -> Optional[Notification]:
+        return self.get_by_key(idempotency_key)
+
+    async def asave(self, notification: Notification) -> None:
+        self.save(notification)
+
+    async def alist_for_user(self, user_id: str) -> list[Notification]:
+        return self.list_for_user(user_id)
+
 
 def _make_store() -> "NotificationStore":
     import os

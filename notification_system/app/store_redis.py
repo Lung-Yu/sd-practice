@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 import redis as redis_lib
+import redis.asyncio as aioredis
 
 from .models import Notification, NotificationStatus
 
@@ -52,6 +53,7 @@ class RedisNotificationStore:
 
     def __init__(self, url: str) -> None:
         self._r = redis_lib.from_url(url, decode_responses=True)
+        self._ar = aioredis.from_url(url, decode_responses=True, max_connections=100)
 
     # -- read ops (no locking needed; Redis handles concurrency) --------------
 
@@ -89,3 +91,36 @@ class RedisNotificationStore:
         for nid in ids:
             pipe.hgetall(f"notification:{nid}")
         return [_deserialize(d) for d in pipe.execute() if d]
+
+    # -- async variants: same logic, asyncio client → no thread pool ----------
+
+    async def aget(self, notification_id: str) -> Optional[Notification]:
+        d = await self._ar.hgetall(f"notification:{notification_id}")
+        return _deserialize(d) if d else None
+
+    async def aget_by_key(self, idempotency_key: str) -> Optional[Notification]:
+        nid = await self._ar.get(f"idempotency:{idempotency_key}")
+        return None if nid is None else await self.aget(nid)
+
+    async def asave(self, notification: Notification) -> None:
+        pipe = self._ar.pipeline()
+        pipe.hset(f"notification:{notification.notification_id}", mapping=_serialize(notification))
+        pipe.set(
+            f"idempotency:{notification.idempotency_key}",
+            notification.notification_id,
+            ex=_IDEMPOTENCY_TTL,
+        )
+        pipe.zadd(
+            f"user:{notification.user_id}:notifications",
+            {notification.notification_id: notification.created_at.timestamp()},
+        )
+        await pipe.execute()
+
+    async def alist_for_user(self, user_id: str) -> list[Notification]:
+        ids = await self._ar.zrange(f"user:{user_id}:notifications", 0, -1)
+        if not ids:
+            return []
+        pipe = self._ar.pipeline()
+        for nid in ids:
+            pipe.hgetall(f"notification:{nid}")
+        return [_deserialize(d) for d in await pipe.execute() if d]

@@ -38,6 +38,8 @@ services:
     build: .
     networks:
       - sd_monitoring
+    ports:
+      - "8001:8001"   # Prometheus scrapes delivery-side metrics here
     env_file:
       - .env
     environment:

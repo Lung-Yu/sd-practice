@@ -7,10 +7,17 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:9090"]
 
-  # notification_system — app exposes /metrics via prometheus-client
+  # notification_system — API workers expose request-level metrics
   - job_name: notification_service
     static_configs:
       - targets: ["notification-api:8000"]
+    metrics_path: /metrics
+
+  # notification_system — delivery worker exposes delivery-side metrics
+  # (notifications_sent_total, delivery_duration, circuit_breaker_trips, etc.)
+  - job_name: delivery_worker
+    static_configs:
+      - targets: ["delivery-worker:8001"]
     metrics_path: /metrics
 
   # qr_code_generator — app instances expose /metrics

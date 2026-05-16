@@ -273,3 +273,88 @@ Fix: `@app.on_event("startup")` blocks worker initialization until `redis.ping()
 - **Redis cluster**: shard write load across multiple Redis nodes — eliminates single-Redis bottleneck
 - **Skip nginx for writes**: use DNS-based client-side load balancing (gRPC + service discovery) — removes nginx hop from the hot path  
 - **Vertical scale**: 1 large container + more uvicorn workers outperforms N small containers + nginx for IO-bound workloads at these RPS levels
+
+---
+
+## Tier 4: Async Delivery Worker
+
+**Change:** `worker.py` converted from synchronous blocking loop to `asyncio.gather()` concurrent batch processing. BATCH_SIZE lifted from 10 → 20.
+
+```
+# Before: sequential
+for msg_id, data in msgs:
+    notification = store.get(nid)
+    deliver(notification)
+    r.xack(...)
+
+# After: concurrent
+tasks = [_process_message(r, msg_id, data, loop) for msg_id, data in msgs]
+await asyncio.gather(*tasks, return_exceptions=True)
+```
+
+Each task: `await store.aget(nid)` → `await loop.run_in_executor(None, deliver, notification)` → `await r.xack(...)`. The executor is needed because `channel.send()` is sync (simulates network latency with sleep).
+
+**Key insight:** batch total time = `max(delivery_time)` instead of `sum(delivery_time)`. Under high failure rate with retries, this is N× faster per batch.
+
+**Bug fixed:** `redis.asyncio` module has no `.exceptions` attribute — must use top-level `redis.exceptions` for `BusyLoadingError`, `ConnectionError`, `ResponseError`.
+
+| Metric | 3B (sync worker) | 4 (async worker) | Δ |
+|--------|-----------------|------------------|---|
+| POST p95 | 283ms ✓ | 361ms ✓ | +28% |
+| GET p95 | 137ms ✓ | 172ms ✓ | +25% |
+| Throughput | ~3072 RPS | ~2736 RPS | −11% |
+| All pass | ✓ | ✓ | — |
+
+API-side regression: async worker creates 20 concurrent thread-pool tasks per batch, adding Redis write pressure from the worker side. The win is delivery throughput (drains backlogs faster), not API RPS.
+
+---
+
+## Tier 5: Failure Mode Testing (FAILURE_RATE=0.2)
+
+### Connection Pool Exhaustion (first attempt — catastrophic failure)
+
+Running with `max_connections=100` and 600 VUs caused **83% error rate** from `redis.exceptions.ConnectionError: Too many connections` — this is client-side pool exhaustion, NOT a Redis server problem. The two look identical in logs.
+
+**Root cause:** with 600 VUs and async routes, up to 600 coroutines may simultaneously hold an open connection during `await pipeline.execute()`. Pool of 100 < 600 concurrent holders → exception raised immediately (redis-py does NOT block-and-wait by default).
+
+**Fix:** `max_connections=1000` in both `store_redis.py` and `queue.py`.
+
+**Formula:** `required_pool ≥ peak_concurrent_VUs × max_simultaneous_redis_ops_per_request`
+
+### Results (FAILURE_RATE=0.2, pool=1000, 4 uvicorn workers)
+
+All thresholds pass. API is 100% reliable despite 20% channel failure rate — circuit breaker and DLQ are invisible to HTTP clients.
+
+| Metric | Result | Target |
+|--------|--------|--------|
+| POST p95 | 358ms | <500ms ✓ |
+| GET p95 | 169ms | <500ms ✓ |
+| Error rate | 0.00% | <1% ✓ |
+| All checks | 621,538/621,538 | 100% ✓ |
+
+**Reliability machinery active:**
+- Circuit breaker trips: email=3567, sms=2831, push=1633 — CB oscillates OPEN→HALF_OPEN→CLOSED as channel failures are intermittent
+- DLQ accumulated: 22,104 entries — CB OPEN fast-fail → DLQ (bypasses all 3 retries), so DLQ >> theoretical 0.8% permanent failure rate
+- Total retries: ~7,052 across channels
+
+### DLQ Retry Verification
+
+After restoring FAILURE_RATE=0 (simulating channel recovery), replayed the entire DLQ:
+
+```bash
+POST /admin/dlq/retry?count=5000  # × 4 batches + 1 final batch
+# DLQ: 22,104 → 11,904 → 6,904 → 1,904 → 0
+```
+
+All 22,104 previously FAILED notifications delivered successfully. Status updated to `sent`; `sent_at` timestamp reflects the retry time.
+
+**Design quirk discovered:** `error` field is NOT cleared on successful retry — it preserves the previous circuit breaker message even after status becomes `sent`. Fix: clear `notification.error = None` in the success branch of `deliver()`.
+
+**DLQ drain rate:** ~733/second at FAILURE_RATE=0 (no retries needed, fast delivery).
+
+**Production ops playbook:**
+1. DLQ depth alert fires (threshold: > 1000)
+2. Diagnose channel health (circuit breaker state, external provider status)
+3. Wait for channel recovery (or fix underlying issue)
+4. Replay: `POST /admin/dlq/retry?count=N` in batches
+5. Monitor: `notifications_sent_total{status="SENT"}` rises, DLQ depth falls to 0

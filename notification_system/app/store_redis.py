@@ -53,7 +53,10 @@ class RedisNotificationStore:
 
     def __init__(self, url: str) -> None:
         self._r = redis_lib.from_url(url, decode_responses=True)
-        self._ar = aioredis.from_url(url, decode_responses=True, max_connections=100)
+        # Pool sized for 600+ VUs: each concurrent coroutine may hold a
+        # connection during await pipeline.execute(). max_connections=100
+        # was exhausted at ~600 VU concurrency → ConnectionError.
+        self._ar = aioredis.from_url(url, decode_responses=True, max_connections=1000)
 
     # -- read ops (no locking needed; Redis handles concurrency) --------------
 

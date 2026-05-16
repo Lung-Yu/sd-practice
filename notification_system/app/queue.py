@@ -36,7 +36,7 @@ def ensure_group() -> None:
 def _get_async_client() -> _aioredis.Redis:
     global _async_client
     if _async_client is None:
-        _async_client = _aioredis.from_url(config.REDIS_URL, decode_responses=True, max_connections=100)
+        _async_client = _aioredis.from_url(config.REDIS_URL, decode_responses=True, max_connections=1000)
     return _async_client
 
 

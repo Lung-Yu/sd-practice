@@ -47,6 +47,7 @@ services:
       - FAILURE_RATE=${FAILURE_RATE:-0.20}
       - MAX_RETRIES=${MAX_RETRIES:-3}
       - REDIS_URL=redis://redis:6379/0
+      - WORKER_BATCH_SIZE=${WORKER_BATCH_SIZE:-20}
     command: ["python", "-m", "app.worker"]
     depends_on:
       - redis

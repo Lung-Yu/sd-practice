@@ -33,7 +33,7 @@ from .store import store
 
 METRICS_PORT = 8001   # delivery-worker exposes /metrics on this port
 
-BATCH_SIZE = 20   # messages to claim per XREADGROUP call (increased for async)
+BATCH_SIZE = config.WORKER_BATCH_SIZE   # set via WORKER_BATCH_SIZE env var
 BLOCK_MS = 1000   # how long to block waiting for new messages
 
 CONSUMER_NAME = socket.gethostname()

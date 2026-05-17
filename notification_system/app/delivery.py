@@ -41,6 +41,7 @@ def deliver(notification: Notification) -> Notification:
                 _send_with_timeout(channel, notification.user_id, notification.message)
                 notification.status = NotificationStatus.SENT
                 notification.sent_at = datetime.utcnow()
+                notification.error = None  # clear any error from a previous failed attempt
                 store.save(notification)
                 notifications_sent.labels(channel=notification.channel, status="SENT").inc()
                 return notification

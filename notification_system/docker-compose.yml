@@ -38,8 +38,9 @@ services:
     build: .
     networks:
       - sd_monitoring
-    ports:
-      - "8001:8001"   # Prometheus scrapes delivery-side metrics here
+    # No host port binding — multiple worker instances can't share the same host
+    # port. Prometheus scrapes via sd_monitoring network (delivery-worker:8001).
+    # For scaled deployments, Prometheus DNS round-robins across instances.
     env_file:
       - .env
     environment:

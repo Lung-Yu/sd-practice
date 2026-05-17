@@ -582,3 +582,51 @@ Old per-message approach allowed reads and deliveries to overlap (message 1's de
 | T7 | 4w × BS=20, 2 Redis | 623ms | ❌ |
 | T7+save_status | 4w × BS=5, 2 Redis, dirty Redis | 564ms | ❌ |
 | **T7+abatch_get** | **4w × BS=5, 2 Redis, clean Redis** | **430ms** | **✓** |
+
+---
+
+## Tier 8: BS=20 Passes with All Optimizations
+
+**Hypothesis:** Tier 6 showed 4w × BS=20 → 1,450ms. With abatch_get + batch XACK + save_status + 2 Redis, can BS=20 pass 500ms?
+
+**Answer: Yes.**
+
+### What changed from Tier 6 to Tier 8
+
+| Operation | Tier 6 | Tier 8 | Delta |
+|-----------|--------|--------|-------|
+| Notification reads | 80 individual HGETALL round-trips | 4 pipelines (20 each) | −95% round-trips |
+| Delivery writes | 80 × 3-command pipelines (HSET+SET+ZADD) | 80 × 1 HSET | −67% commands |
+| Stream ACKs | 80 XACK commands | 4 XACK (batch) | −95% commands |
+| Stream vs API contention | 1 Redis (shared) | 2 Redis (split) | Full isolation |
+
+Redis is single-threaded. Fewer commands in flight = shorter queue per command = lower API latency.
+
+### Result: 4w × BS=20, 2 Redis, clean keyspace
+
+```
+post_send_duration:     avg=329ms  p(95)=433ms  ✓
+get_by_id_duration:     avg=110ms  p(95)=157ms  ✓
+list_by_user_duration:  avg=164ms  p(95)=226ms  ✓
+http_req_failed:        0.00%       ✓
+checks_succeeded:       100%        ✓
+```
+
+**Tier 6 → Tier 8 at BS=20: 1,450ms → 433ms.** Same 4 workers, same batch size, 3× latency reduction.
+
+### Incidental finding: setup() EOF race
+
+When k6 ran immediately after container restart, `setup()` got EOF responses (API re-establishing connection pools). The 200 seeded IDs weren't collected → `seedIds.length === 0` → all GET requests used the dummy fallback UUID → 37,076 404s → `http_req_failed = 20%`. Fix: wait 8–10s after container restart before running k6.
+
+### Final progression
+
+| Tier | Config | POST p95 | Pass? |
+|------|--------|----------|-------|
+| T4 | 1w × BS=20, 1 Redis | 361ms | ✓ |
+| T6 | 4w × BS=20, 1 Redis | 1,450ms | ❌ |
+| T6a | 4w × BS=5, 1 Redis | 351ms | ✓ |
+| T7 | 4w × BS=20, 2 Redis | 623ms | ❌ |
+| T7+ | 4w × BS=5, 2 Redis + abatch | 430ms | ✓ |
+| **T8** | **4w × BS=20, 2 Redis + all opts** | **433ms** | **✓** |
+
+Tier 8 achieves the same latency as Tier 7+ (430ms ≈ 433ms) while processing 4× more messages per batch cycle. The extra batch capacity is free headroom for traffic spikes.

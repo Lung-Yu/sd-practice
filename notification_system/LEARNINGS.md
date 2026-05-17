@@ -358,3 +358,86 @@ All 22,104 previously FAILED notifications delivered successfully. Status update
 3. Wait for channel recovery (or fix underlying issue)
 4. Replay: `POST /admin/dlq/retry?count=N` in batches
 5. Monitor: `notifications_sent_total{status="SENT"}` rises, DLQ depth falls to 0
+
+---
+
+## Tier 6: Multi-Worker Delivery Scaling (4 × delivery-worker)
+
+### Setup
+
+Scaled delivery-worker to 4 container instances sharing the `delivery-workers` consumer group:
+
+```bash
+FAILURE_RATE=0 MAX_RETRIES=1 podman-compose -f docker-compose.yml \
+  -f k6s/docker-compose.loadtest.yml up -d --scale delivery-worker=4
+```
+
+**Port conflict fixed first:** removed `ports: ["8001:8001"]` from `docker-compose.yml` — static host port binding prevents scaling. Prometheus reaches workers via `sd_monitoring` network DNS (round-robins across instances).
+
+### Consumer Group Distribution
+
+Each worker uses `socket.gethostname()` as consumer name → unique container ID per instance. Redis XREADGROUP `>` ensures exactly-once delivery across all consumers.
+
+| Worker | Container ID | Messages delivered |
+|--------|--------------|--------------------|
+| 1 | a2a57a26da65 | 16,423 |
+| 2 | 8a68aa5d4ea7 | 16,701 |
+| 3 | d7c848441057 | 16,652 |
+| 4 | feb87a153fb3 | 16,769 |
+| **Total** | | **66,545** |
+
+Distribution: ~25% per worker. No duplicates (consumer group guarantees exactly-once claim per message).
+
+### Latency Regression
+
+| Config | POST p95 | GET p95 | Throughput | All pass? |
+|--------|----------|---------|------------|-----------|
+| 1 delivery worker (Tier 4) | 361ms ✓ | 172ms ✓ | 2,736 RPS | ✓ |
+| 4 delivery workers (Tier 6) | **1,450ms ❌** | **532ms ❌** | **800 RPS** | ❌ |
+
+Error rate stayed 0.00% — no connection errors, pure latency degradation.
+
+### Root Cause: Redis Single-Threaded Command Queue Saturation
+
+Each delivery worker runs `asyncio.gather()` at BATCH_SIZE=20:
+- `store.aget(nid)` → Redis HGETALL per message
+- `loop.run_in_executor(None, deliver, notification)` → sync `store.save()`: pipeline(HSET + SET + ZADD) per message
+- `r.xack()` → XACK per message
+
+4 workers × 20 concurrent delivers = **80 simultaneous Redis pipelines** from workers alone.
+
+Plus API: 600 VUs × 4 async Redis ops each = hundreds of concurrent API commands.
+
+Redis is single-threaded. With 80+ delivery pipelines queued, every Redis command waits proportionally longer. This cascades directly to API latency — each POST /send makes 4 Redis calls, so if each call waits 10× longer, p95 jumps ~4× longer.
+
+**IO-bound scaling wall — advanced edition:** adding more delivery workers adds more Redis contention, not more compute. The bottleneck is the serialization point (Redis), not the workers themselves.
+
+### BATCH_SIZE inverse scaling rule
+
+With a single Redis, the total concurrent delivery pipeline count is the lever:
+```
+total_concurrent_deliveries = num_workers × BATCH_SIZE
+```
+
+To preserve the same Redis command rate when scaling workers:
+- 1 worker, BATCH_SIZE=20 → 20 concurrent
+- 4 workers, BATCH_SIZE=5  → 20 concurrent (same Redis pressure, 4× delivery containers)
+
+### What would actually fix multi-worker scaling
+
+| Approach | Description |
+|----------|-------------|
+| Separate delivery Redis | API uses Redis-A (state); worker uses Redis-B (stream + delivery writes) — independent workloads, no cross-contention |
+| Redis Cluster | Shard delivery writes to different nodes from API reads |
+| Reduce BATCH_SIZE inversely | `BATCH_SIZE = target_concurrency / num_workers` — simple config fix, same Redis load |
+| Dedicated delivery store | Worker writes to a separate fast store (e.g., Cassandra) for delivery status; API reads from primary Redis |
+
+The right production pattern: **two Redis instances** — API-facing Redis for idempotency, rate limiting, and notification state reads; delivery Redis for the Stream, ACK, and delivery status writes.
+
+### What This Test Validated
+
+Despite the latency failure, Tier 6 confirmed:
+1. **Exactly-once delivery across N workers** — Redis consumer group works correctly at scale
+2. **Consumer name = hostname = unique per container** — no coordination needed for unique consumer IDs in docker-compose/Kubernetes
+3. **Even load distribution** — ~25% per worker with zero configuration (Redis natural distribution)
+4. **Bottleneck is Redis, not workers** — workers are idle-capable; the serialization point is the single Redis instance

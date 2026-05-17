@@ -1,0 +1,11 @@
+version: "3.9"
+# Tier 9D — horizontal API scaling override.
+# Removes the fixed host port binding from notification-api so podman-compose
+# can start multiple replicas. All traffic goes through nginx (:8080).
+#
+# Usage:
+#   podman-compose -f docker-compose.yml -f docker-compose.scaled.yml \
+#     up -d --scale notification-api=4 --scale delivery-worker=4
+services:
+  notification-api:
+    ports: []   # disable host port binding to allow multiple replicas

@@ -32,7 +32,7 @@ from prometheus_client import start_http_server
 
 from . import config
 from .delivery import deliver
-from .queue import GROUP_NAME, STREAM_KEY
+from .queue import GROUP_NAME, STREAM_KEY, STREAM_KEY_CRITICAL
 from .store import store
 
 METRICS_PORT = 8001   # delivery-worker exposes /metrics on this port
@@ -56,16 +56,18 @@ async def _wait_for_redis(r: aioredis.Redis, retries: int = 60, delay: float = 2
 
 
 async def _ensure_group(r: aioredis.Redis) -> None:
-    try:
-        await r.xgroup_create(STREAM_KEY, GROUP_NAME, id="0", mkstream=True)
-    except redis.exceptions.ResponseError:
-        pass  # group already exists
+    for stream in (STREAM_KEY, STREAM_KEY_CRITICAL):
+        try:
+            await r.xgroup_create(stream, GROUP_NAME, id="0", mkstream=True)
+        except redis.exceptions.ResponseError:
+            pass  # group already exists
 
 
 async def _process_batch(
     r: aioredis.Redis,
     msgs: list[tuple[str, dict]],
     loop: asyncio.AbstractEventLoop,
+    stream_key: str = STREAM_KEY,
 ) -> None:
     """Fetch all notifications in one pipeline round-trip, deliver concurrently, ACK in batch."""
     msg_ids = [msg_id for msg_id, _ in msgs]
@@ -93,9 +95,9 @@ async def _process_batch(
             print(f"[worker] delivery error: {exc}", flush=True)
 
     # Batch ACK: 1 XACK command for the whole batch (vs N individual XACKs).
-    # ACK regardless — phantom/already-deleted notifications must not requeue.
+    # ACK on the correct stream — critical messages live in STREAM_KEY_CRITICAL.
     if msg_ids:
-        await r.xack(STREAM_KEY, GROUP_NAME, *msg_ids)
+        await r.xack(stream_key, GROUP_NAME, *msg_ids)
 
 
 async def run() -> None:
@@ -126,23 +128,43 @@ async def run() -> None:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    print(f"[worker] {CONSUMER_NAME} ready — consuming {STREAM_KEY}/{GROUP_NAME}", flush=True)
+    print(
+        f"[worker] {CONSUMER_NAME} ready — consuming {STREAM_KEY_CRITICAL} (priority) "
+        f"then {STREAM_KEY} / group={GROUP_NAME}",
+        flush=True,
+    )
 
     while running:
-        messages = await r.xreadgroup(
+        # Tier 9C priority: drain critical stream first (non-blocking),
+        # then fall back to normal stream (blocking up to BLOCK_MS).
+        critical_msgs = await r.xreadgroup(
             GROUP_NAME,
             CONSUMER_NAME,
-            {STREAM_KEY: ">"},   # ">" = only unclaimed messages
+            {STREAM_KEY_CRITICAL: ">"},
             count=BATCH_SIZE,
-            block=BLOCK_MS,
         )
         all_msgs: list[tuple[str, dict]] = []
-        for _stream, msgs in (messages or []):
-            all_msgs.extend(msgs)
+        active_stream = STREAM_KEY_CRITICAL
+
+        if critical_msgs:
+            for _stream, msgs in critical_msgs:
+                all_msgs.extend(msgs)
+        else:
+            # No critical messages — wait for normal ones
+            normal_msgs = await r.xreadgroup(
+                GROUP_NAME,
+                CONSUMER_NAME,
+                {STREAM_KEY: ">"},
+                count=BATCH_SIZE,
+                block=BLOCK_MS,
+            )
+            active_stream = STREAM_KEY
+            for _stream, msgs in (normal_msgs or []):
+                all_msgs.extend(msgs)
 
         if all_msgs:
             try:
-                await _process_batch(r, all_msgs, loop)
+                await _process_batch(r, all_msgs, loop, stream_key=active_stream)
             except Exception as exc:
                 print(f"[worker] unhandled batch error: {exc}", flush=True)
 

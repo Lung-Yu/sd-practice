@@ -2,9 +2,14 @@
 Redis Stream helpers — shared by the HTTP API (producer) and the delivery worker (consumer).
 
 Stream layout:
-  notifications:delivery   STREAM  — pending delivery jobs
+  notifications:critical   STREAM  — high-priority delivery jobs (Tier 9C)
+  notifications:delivery   STREAM  — normal-priority delivery jobs
   Consumer group: delivery-workers
   Each worker uses socket.gethostname() as consumer name → unique per container.
+
+Priority model (Tier 9C): workers poll the critical stream first (non-blocking),
+then fall back to the normal stream (blocking). This guarantees critical messages
+are drained before any normal messages are processed.
 
 Tier 7: Stream + DLQ use DELIVERY_REDIS_URL (falls back to REDIS_URL in single-Redis mode).
 This separates stream I/O from notification-state I/O, eliminating cross-workload contention
@@ -16,6 +21,7 @@ import redis.asyncio as _aioredis
 from . import config
 
 STREAM_KEY = "notifications:delivery"
+STREAM_KEY_CRITICAL = "notifications:critical"
 GROUP_NAME = "delivery-workers"
 
 _client: _redis.Redis | None = None
@@ -30,11 +36,12 @@ def _get_client() -> _redis.Redis:
 
 
 def ensure_group() -> None:
-    """Create the consumer group if it doesn't exist. Safe to call multiple times."""
-    try:
-        _get_client().xgroup_create(STREAM_KEY, GROUP_NAME, id="0", mkstream=True)
-    except _redis.exceptions.ResponseError:
-        pass  # already exists
+    """Create the consumer group on both streams if it doesn't exist. Safe to call multiple times."""
+    for stream in (STREAM_KEY, STREAM_KEY_CRITICAL):
+        try:
+            _get_client().xgroup_create(stream, GROUP_NAME, id="0", mkstream=True)
+        except _redis.exceptions.ResponseError:
+            pass  # already exists
 
 
 def _get_async_client() -> _aioredis.Redis:
@@ -44,12 +51,26 @@ def _get_async_client() -> _aioredis.Redis:
     return _async_client
 
 
-def enqueue(notification_id: str) -> None:
-    _get_client().xadd(STREAM_KEY, {"notification_id": notification_id})
+def enqueue(notification_id: str, priority: str = "normal") -> None:
+    stream = STREAM_KEY_CRITICAL if priority == "critical" else STREAM_KEY
+    _get_client().xadd(stream, {"notification_id": notification_id})
 
 
-async def aenqueue(notification_id: str) -> None:
-    await _get_async_client().xadd(STREAM_KEY, {"notification_id": notification_id})
+async def aenqueue(notification_id: str, priority: str = "normal") -> None:
+    stream = STREAM_KEY_CRITICAL if priority == "critical" else STREAM_KEY
+    await _get_async_client().xadd(stream, {"notification_id": notification_id})
+
+
+async def aenqueue_batch(notification_ids: list[str], priority: str = "normal") -> None:
+    """Enqueue N notifications in one pipeline round-trip (fan-out write path)."""
+    if not notification_ids:
+        return
+    stream = STREAM_KEY_CRITICAL if priority == "critical" else STREAM_KEY
+    r = _get_async_client()
+    pipe = r.pipeline()
+    for nid in notification_ids:
+        pipe.xadd(stream, {"notification_id": nid})
+    await pipe.execute()
 
 
 # ---------------------------------------------------------------------------

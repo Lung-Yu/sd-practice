@@ -9,6 +9,7 @@ class SendRequest(BaseModel):
     channel: str
     message: str
     topic: str = "default"
+    priority: str = "normal"  # "normal" | "critical"
 
 
 class SendResponse(BaseModel):
@@ -29,3 +30,18 @@ class NotificationDetail(BaseModel):
 class NotificationSummary(BaseModel):
     notification_id: str
     status: str
+
+
+class FanoutRequest(BaseModel):
+    user_ids: list[str]
+    channel: str
+    message: str
+    topic: str = "default"
+    priority: str = "normal"  # "normal" | "critical"
+
+
+class FanoutResponse(BaseModel):
+    fanout_id: str          # shared trace ID for this fan-out batch
+    user_count: int
+    notification_ids: list[str]
+    skipped: int            # idempotency dedup hits

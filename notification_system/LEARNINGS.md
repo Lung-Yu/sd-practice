@@ -630,3 +630,124 @@ When k6 ran immediately after container restart, `setup()` got EOF responses (AP
 | **T8** | **4w × BS=20, 2 Redis + all opts** | **433ms** | **✓** |
 
 Tier 8 achieves the same latency as Tier 7+ (430ms ≈ 433ms) while processing 4× more messages per batch cycle. The extra batch capacity is free headroom for traffic spikes.
+
+---
+
+## Tier 9A: Redis TTL (Keyspace Expiry)
+
+**Change:** Added `NOTIFICATION_TTL_S` (default 7 days) to all `save()` / `asave()` pipelines.  
+Notification HASHes now carry `EXPIRE` on creation. Idempotency keys have their own independent 24h TTL.
+
+**Behavior notes:**
+- `volatile-lru` eviction policy set on primary Redis; has no effect without `--maxmemory` flag (eviction never triggers unless `maxmemory` is configured)
+- New notifications: `TTL = 604800` ✓
+- Old notifications (before this change): `TTL = -1` (persist forever) — no retroactive TTL
+- ZADD user timeline has no TTL — "phantom members" accumulate after notification HASH expires
+- `aget()`, `abatch_get()`, `list_for_user()` all have `if d` guards that filter expired HASHes from results
+
+**Production checklist:**
+1. Set `--maxmemory` + `maxmemory-policy volatile-lru` in Redis config
+2. Monitor `redis_keyspace_hits` vs `redis_keyspace_misses` — eviction rate should be near-zero under normal load
+3. Consider ZADD cleanup job to prune phantom members from user timelines
+
+---
+
+## Tier 9B: Fan-out (Batch Broadcast)
+
+**Change:** Added `POST /fanout` endpoint — broadcasts one message to N users in 3 Redis round-trips regardless of N.
+
+**Write amplification:** Each user requires 6 Redis commands (idempotency GET + HSET + EXPIRE + SET + ZADD + XADD). This is unavoidable — every user needs its own state. What CAN be optimized is RTT count.
+
+**Optimization:** Replaced sequential `aget_by_key()` × N loop (N round-trips for dedup) with `aget_existing_keys()` — pipelines N GETs in one round-trip.
+
+**3-RTT design (constant regardless of N):**
+```
+RTT 1: pipeline GET × N         → dedup check (which users already got this message?)
+RTT 2: pipeline HSET+EXPIRE+SET+ZADD × M  → save M new notifications (M ≤ N after dedup)
+RTT 3: pipeline XADD × M       → enqueue M to delivery stream
+```
+
+**Benchmark:**
+
+| N | avg | per_user |
+|---|-----|---------|
+| 1 | 10ms | 10ms |
+| 10 | 3.6ms | 0.36ms |
+| 100 | 21ms | 0.21ms |
+| 1,000 | 176ms | 0.18ms |
+| 5,000 | 898ms | 0.18ms |
+
+Per-user cost stabilizes at ~0.18ms for large N, confirming pipeline efficiency. N=5000 at ~900ms reflects data transfer cost (20,000 commands in 3 batches), not RTT overhead.
+
+**ZADD phantom member issue:** notification HASH has TTL=7d, but user ZSET has no TTL → phantom members accumulate. Mitigated by `if d` guard in `list_for_user`; production fix requires periodic ZADD cleanup.
+
+---
+
+## Tier 9C: Priority Queue (Dual Stream)
+
+**Change:** Added `notifications:critical` stream. `POST /send` and `POST /fanout` accept `priority: "critical" | "normal"`. Workers poll critical stream first (non-blocking), fall back to normal stream (blocking).
+
+**Key design:**
+```
+Producer: route to STREAM_KEY_CRITICAL if priority == "critical" else STREAM_KEY
+Consumer: 
+  1. xreadgroup(STREAM_KEY_CRITICAL, block=None)  → non-blocking check
+  2. if empty: xreadgroup(STREAM_KEY, block=BLOCK_MS)  → wait for normal
+```
+
+**Critical XACK bug:** must `xack(stream_key, ...)` on the stream the message was READ FROM — not always `STREAM_KEY`. Messages read from `STREAM_KEY_CRITICAL` must be ACKed there; otherwise they accumulate in the PEL forever.
+
+**Routing verification:**
+```
+Send 3 normal + 2 critical:
+  notifications:delivery  +3 ✓
+  notifications:critical  +2 ✓
+```
+
+**Priority effect (low load):** both streams drain instantly (idle workers). Priority gap is measurable under sustained load where normal stream has persistent backlog.
+
+**Measured delivery times (80 normal + 5 critical):**
+- Critical avg: 0.33s
+- Normal p50: 0.66s
+- Speedup: ~2×
+
+**Production guidance:**
+- Monitor `XLEN notifications:critical` — alert if depth > 100
+- Use ≤ 3 priority levels (critical/high/normal) — more adds operational complexity
+- Both streams share one consumer group (`delivery-workers`); no dedicated critical worker needed
+
+---
+
+## Tier 9D: Horizontal API Scaling Revisit
+
+**Question:** With async routes + Redis backend, does adding uvicorn workers (4 vs 1) improve throughput?
+
+**Answer: No measurable improvement.**
+
+**Benchmark results:**
+
+| Concurrency | 1 Worker RPS | 4 Workers RPS | Δ |
+|-------------|-------------|--------------|---|
+| 50 | 1,189 | 1,380 | +16% (noise) |
+| 100 | 1,435 | 1,354 | −6% (noise) |
+| 200 | 1,481 | 1,450 | −2% (noise) |
+| 300 | 1,538 | 1,625 | +6% (noise) |
+
+**Why:** FastAPI + aioredis is I/O-bound async. A single event loop suspends at every `await`, allowing hundreds of concurrent coroutines to progress simultaneously. The GIL is released during Redis network I/O. Adding workers just creates more event loops competing for the same Redis — no throughput gain, slightly more connection overhead.
+
+**When workers DO help:**
+- CPU-intensive work (encryption, heavy JSON processing at 10K+ RPS)
+- Sync blocking code in the request path (incompatible with asyncio)
+- Need fault isolation between instances
+
+**True bottleneck at 1,000–1,500 RPS:**
+1. Redis command throughput (6+ commands per POST /send)
+2. Python thread pool (for `deliver()` which is sync)
+3. Connection pool contention under extreme concurrency
+
+**Production guidance:**
+- For I/O-bound async workloads, scale the bottleneck (Redis), not the API
+- Scale API instances for HA/fault tolerance, not throughput
+- To break 5,000 RPS: Redis cluster + pipeline optimization are the levers
+
+**podman-compose scaling limitation:** `--scale notification-api=N` fails when `ports: "8000:8000"` is set (port conflict). For production, use Kubernetes Deployment with replicas and a Service instead of docker-compose scale.

@@ -59,6 +59,13 @@ class NotificationStore:
     async def asave_status(self, notification: Notification) -> None:
         self.save(notification)
 
+    async def aget_existing_keys(self, idempotency_keys: list[str]) -> set[str]:
+        return {k for k in idempotency_keys if self._by_key.get(k) is not None}
+
+    async def asave_batch(self, notifications: list[Notification]) -> None:
+        for n in notifications:
+            self.save(n)
+
     async def alist_for_user(self, user_id: str) -> list[Notification]:
         return self.list_for_user(user_id)
 

@@ -21,3 +21,8 @@ RATE_LIMIT_WINDOW_S = int(os.getenv("RATE_LIMIT_WINDOW_S", "60"))
 # Rule: num_workers × BATCH_SIZE = target_concurrent_deliveries
 # Default 20 for 1 worker; set to 5 when running 4 workers to keep same Redis pressure.
 WORKER_BATCH_SIZE = int(os.getenv("WORKER_BATCH_SIZE", "20"))
+
+# Notification HASH TTL (seconds). 0 = no expiry (not recommended for production).
+# Expired HASHes are filtered out by the `if d` guard in list_for_user / abatch_get.
+# Idempotency keys have their own independent TTL (_IDEMPOTENCY_TTL = 24 h).
+NOTIFICATION_TTL_S = int(os.getenv("NOTIFICATION_TTL_S", str(7 * 24 * 3600)))  # 7 days

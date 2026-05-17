@@ -13,11 +13,14 @@ volumes:
 
 services:
   # Primary Redis — notification state: HASH, idempotency STRING, user ZSET, rate-limit counters
+  # Tier 9A: volatile-lru evicts keys with TTL first when memory is tight.
+  # Notification HASHes carry EXPIRE (NOTIFICATION_TTL_S); idempotency STRINGs have ex=86400.
+  # ZADD user-sets have no TTL — phantom member entries are filtered by `if d` guards.
   redis:
     image: redis:7-alpine
     networks:
       - sd_monitoring
-    command: redis-server --save 60 1 --appendonly yes
+    command: redis-server --save 60 1 --appendonly yes --maxmemory-policy volatile-lru
     volumes:
       - redis_data:/data
 

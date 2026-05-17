@@ -4,6 +4,7 @@ from typing import Optional
 import redis as redis_lib
 import redis.asyncio as aioredis
 
+from . import config
 from .models import Notification, NotificationStatus
 
 _IDEMPOTENCY_TTL = 86_400  # 24 h
@@ -73,6 +74,8 @@ class RedisNotificationStore:
     def save(self, notification: Notification) -> None:
         pipe = self._r.pipeline()
         pipe.hset(f"notification:{notification.notification_id}", mapping=_serialize(notification))
+        if config.NOTIFICATION_TTL_S:
+            pipe.expire(f"notification:{notification.notification_id}", config.NOTIFICATION_TTL_S)
         pipe.set(
             f"idempotency:{notification.idempotency_key}",
             notification.notification_id,
@@ -140,9 +143,23 @@ class RedisNotificationStore:
         nid = await self._ar.get(f"idempotency:{idempotency_key}")
         return None if nid is None else await self.aget(nid)
 
+    async def aget_existing_keys(self, idempotency_keys: list[str]) -> set[str]:
+        """Pipeline GET for N idempotency keys → 1 round-trip.
+        Returns the set of keys that already exist (used for fan-out dedup)."""
+        if not idempotency_keys:
+            return set()
+        pipe = self._ar.pipeline()
+        for key in idempotency_keys:
+            pipe.get(f"idempotency:{key}")
+        results = await pipe.execute()
+        # Return original keys (not nids) where a value exists
+        return {key for key, nid in zip(idempotency_keys, results) if nid is not None}
+
     async def asave(self, notification: Notification) -> None:
         pipe = self._ar.pipeline()
         pipe.hset(f"notification:{notification.notification_id}", mapping=_serialize(notification))
+        if config.NOTIFICATION_TTL_S:
+            pipe.expire(f"notification:{notification.notification_id}", config.NOTIFICATION_TTL_S)
         pipe.set(
             f"idempotency:{notification.idempotency_key}",
             notification.notification_id,
@@ -152,6 +169,27 @@ class RedisNotificationStore:
             f"user:{notification.user_id}:notifications",
             {notification.notification_id: notification.created_at.timestamp()},
         )
+        await pipe.execute()
+
+    async def asave_batch(self, notifications: list[Notification]) -> None:
+        """Persist N notifications in one pipeline round-trip (fan-out write path).
+        4N Redis commands (HSET + EXPIRE + SET + ZADD per notification) → 1 round-trip."""
+        if not notifications:
+            return
+        pipe = self._ar.pipeline()
+        for n in notifications:
+            pipe.hset(f"notification:{n.notification_id}", mapping=_serialize(n))
+            if config.NOTIFICATION_TTL_S:
+                pipe.expire(f"notification:{n.notification_id}", config.NOTIFICATION_TTL_S)
+            pipe.set(
+                f"idempotency:{n.idempotency_key}",
+                n.notification_id,
+                ex=_IDEMPOTENCY_TTL,
+            )
+            pipe.zadd(
+                f"user:{n.user_id}:notifications",
+                {n.notification_id: n.created_at.timestamp()},
+            )
         await pipe.execute()
 
     async def alist_for_user(self, user_id: str) -> list[Notification]:

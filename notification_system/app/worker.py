@@ -77,7 +77,8 @@ async def _process_message(
 
 
 async def run() -> None:
-    r = aioredis.from_url(config.REDIS_URL, decode_responses=True, max_connections=20)
+    # Tier 7: XREADGROUP/XACK on delivery Redis; store reads/writes on primary Redis.
+    r = aioredis.from_url(config.DELIVERY_REDIS_URL, decode_responses=True, max_connections=20)
     await _wait_for_redis(r)
     await _ensure_group(r)
 

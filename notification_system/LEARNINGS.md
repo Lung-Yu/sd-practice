@@ -441,3 +441,31 @@ Despite the latency failure, Tier 6 confirmed:
 2. **Consumer name = hostname = unique per container** — no coordination needed for unique consumer IDs in docker-compose/Kubernetes
 3. **Even load distribution** — ~25% per worker with zero configuration (Redis natural distribution)
 4. **Bottleneck is Redis, not workers** — workers are idle-capable; the serialization point is the single Redis instance
+
+---
+
+## Tier 6a: BATCH_SIZE Inverse Scaling Fix
+
+**Hypothesis:** if Tier 6 failed because 4 workers × BATCH_SIZE=20 = 80 concurrent Redis pipelines saturated Redis, then 4 workers × BATCH_SIZE=5 = 20 concurrent (same as Tier 4 baseline) should restore performance.
+
+**Change:** `WORKER_BATCH_SIZE` env var added to `config.py` and `docker-compose.yml` delivery-worker environment block.
+
+### Results
+
+| Config | POST p95 | GET p95 | Throughput | All pass? |
+|--------|----------|---------|------------|-----------|
+| Tier 4: 1 worker, BS=20 | 361ms ✓ | 172ms ✓ | 2,736 RPS | ✓ |
+| Tier 6: 4 workers, BS=20 | 1,450ms ❌ | 532ms ❌ | 800 RPS | ❌ |
+| **Tier 6a: 4 workers, BS=5** | **351ms ✓** | **162ms ✓** | **2,838 RPS** | **✓** |
+
+Consumer distribution (per-worker SENT counts): 57,739 / 58,150 / 57,988 / 57,971 — ~25% each, 231,848 total.
+
+### What this proves
+
+The `num_workers × BATCH_SIZE = constant` rule works: keeping total concurrent Redis pipelines constant (20) restores API latency regardless of how many worker containers share the load.
+
+### What this does NOT solve
+
+BATCH_SIZE tuning is a config fix, not a scaling fix. 4 workers × BS=5 delivers the same 20 concurrent notifications as 1 worker × BS=20. The real throughput benefit of multiple workers is **fault tolerance** (1 worker failure = 25% delivery capacity lost, not 100%), not raw speed.
+
+To get 4× delivery throughput without API latency regression, the fix is Tier 7: separate Redis instances for API state vs delivery stream.

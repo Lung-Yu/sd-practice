@@ -9,8 +9,10 @@ networks:
 
 volumes:
   redis_data:
+  redis_delivery_data:
 
 services:
+  # Primary Redis — notification state: HASH, idempotency STRING, user ZSET, rate-limit counters
   redis:
     image: redis:7-alpine
     networks:
@@ -18,6 +20,16 @@ services:
     command: redis-server --save 60 1 --appendonly yes
     volumes:
       - redis_data:/data
+
+  # Delivery Redis (Tier 7) — Stream + DLQ only; isolated from API state workload.
+  # When DELIVERY_REDIS_URL is not set the app falls back to REDIS_URL (single-Redis mode).
+  redis-delivery:
+    image: redis:7-alpine
+    networks:
+      - sd_monitoring
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_delivery_data:/data
 
   notification-api:
     build: .
@@ -31,8 +43,10 @@ services:
       - FAILURE_RATE=${FAILURE_RATE:-0.20}
       - MAX_RETRIES=${MAX_RETRIES:-3}
       - REDIS_URL=redis://redis:6379/0
+      - DELIVERY_REDIS_URL=redis://redis-delivery:6379/0
     depends_on:
       - redis
+      - redis-delivery
 
   delivery-worker:
     build: .
@@ -47,10 +61,12 @@ services:
       - FAILURE_RATE=${FAILURE_RATE:-0.20}
       - MAX_RETRIES=${MAX_RETRIES:-3}
       - REDIS_URL=redis://redis:6379/0
+      - DELIVERY_REDIS_URL=redis://redis-delivery:6379/0
       - WORKER_BATCH_SIZE=${WORKER_BATCH_SIZE:-20}
     command: ["python", "-m", "app.worker"]
     depends_on:
       - redis
+      - redis-delivery
 
   # nginx — load balancer / reverse proxy in front of notification-api replicas.
   # Dev:      1 API instance, accessed via :8080 (nginx) or :8000 (direct)

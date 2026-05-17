@@ -5,6 +5,10 @@ Stream layout:
   notifications:delivery   STREAM  — pending delivery jobs
   Consumer group: delivery-workers
   Each worker uses socket.gethostname() as consumer name → unique per container.
+
+Tier 7: Stream + DLQ use DELIVERY_REDIS_URL (falls back to REDIS_URL in single-Redis mode).
+This separates stream I/O from notification-state I/O, eliminating cross-workload contention
+on the primary Redis when multiple delivery workers are active.
 """
 import redis as _redis
 import redis.asyncio as _aioredis
@@ -21,7 +25,7 @@ _async_client: _aioredis.Redis | None = None
 def _get_client() -> _redis.Redis:
     global _client
     if _client is None:
-        _client = _redis.from_url(config.REDIS_URL, decode_responses=True)
+        _client = _redis.from_url(config.DELIVERY_REDIS_URL, decode_responses=True)
     return _client
 
 
@@ -36,7 +40,7 @@ def ensure_group() -> None:
 def _get_async_client() -> _aioredis.Redis:
     global _async_client
     if _async_client is None:
-        _async_client = _aioredis.from_url(config.REDIS_URL, decode_responses=True, max_connections=1000)
+        _async_client = _aioredis.from_url(config.DELIVERY_REDIS_URL, decode_responses=True, max_connections=1000)
     return _async_client
 
 

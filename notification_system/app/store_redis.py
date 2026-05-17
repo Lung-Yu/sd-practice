@@ -122,6 +122,16 @@ class RedisNotificationStore:
 
     # -- async variants: same logic, asyncio client → no thread pool ----------
 
+    async def abatch_get(self, notification_ids: list[str]) -> list[Optional["Notification"]]:
+        """Fetch N notifications in one pipeline round-trip instead of N individual HGETALLs."""
+        if not notification_ids:
+            return []
+        pipe = self._ar.pipeline()
+        for nid in notification_ids:
+            pipe.hgetall(f"notification:{nid}")
+        results = await pipe.execute()
+        return [_deserialize(d) if d else None for d in results]
+
     async def aget(self, notification_id: str) -> Optional[Notification]:
         d = await self._ar.hgetall(f"notification:{notification_id}")
         return _deserialize(d) if d else None

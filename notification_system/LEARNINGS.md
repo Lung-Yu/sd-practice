@@ -518,3 +518,67 @@ Both add operational complexity. For current scale, **Tier 6a (BATCH_SIZE invers
 - Tier 6a's `num_workers × BATCH_SIZE = constant` rule is simpler and more effective at this scale
 - Multi-Redis split pays off when delivery status write volume exceeds what a single Redis can handle (much higher RPS than current setup)
 - Backward-compatible via env var fallback — zero config change for existing single-Redis deployments
+
+---
+
+## Tier 7+: Batch Read (abatch_get) + Batch XACK
+
+**Change:** Replaced per-message `_process_message()` coroutines with a single `_process_batch()` that pipelines all HGETALL reads and collapses all XACKs into one command per batch.
+
+### Two optimizations
+
+**`abatch_get()`** in `store_redis.py`:
+```python
+async def abatch_get(self, notification_ids: list[str]) -> list[Optional[Notification]]:
+    pipe = self._ar.pipeline()
+    for nid in notification_ids:
+        pipe.hgetall(f"notification:{nid}")
+    results = await pipe.execute()
+    return [_deserialize(d) if d else None for d in results]
+```
+N individual HGETALL round-trips → 1 pipeline round-trip. Saves (N−1) × RTT per batch.
+
+**Batch XACK** in `worker.py`:
+```python
+await r.xack(STREAM_KEY, GROUP_NAME, *msg_ids)
+```
+N individual XACK commands → 1 command. `XACK` natively accepts multiple IDs.
+
+### Results with clean Redis
+
+| Config | POST p95 | GET p95 | LIST p95 | Pass? |
+|--------|----------|---------|----------|-------|
+| Tier 7+save_status (4M keys) | 759ms ❌ | 287ms ✓ | 426ms ✓ | ❌ |
+| **Tier 7+abatch_get (clean Redis)** | **408–430ms ✓** | **143–153ms ✓** | **210–224ms ✓** | **✓** |
+
+All thresholds pass for the first time with 4-worker × BS=5 configuration.
+
+### Redis keyspace size is a hidden variable
+
+Primary Redis accumulated 4M keys across multiple test runs, causing a 2× latency increase (408ms → 759ms). Redis stores everything in RAM, but a larger keyspace means:
+- More memory pressure → possible container OOM/swap
+- Longer AOF replay at startup → extended `LOADING` error window
+- Slower key lookup in large hash tables (marginal but measurable at 4M keys)
+
+**Production fix**: set TTL on notification HASHes; configure `maxmemory-policy allkeys-lru`.
+
+### Startup race condition: PING ≠ ready
+
+`_wait_for_redis` uses `PING` to detect Redis readiness. Redis 7 responds to `PING` during AOF replay but returns `LOADING` for all data commands. When only delivery Redis was waited on, `abatch_get()` (hitting primary Redis) caused a tight error loop at startup — workers read batches from the stream but couldn't fetch notifications, never ACKed them, and accumulated thousands of pending messages.
+
+**Fix**: wait for both delivery Redis and primary Redis before entering the main loop.
+
+### abatch_get design tradeoff
+
+Old per-message approach allowed reads and deliveries to overlap (message 1's delivery starts as soon as its HGETALL completes, while messages 2–5 are still being fetched). New batch approach: all reads must complete before any delivery starts. For BS=5 with ~1ms Redis RTT, the overlap benefit is negligible and the saved round-trips outweigh it. For larger BS or higher-latency Redis, the gap grows.
+
+### Final benchmark progression
+
+| Tier | Config | POST p95 | Pass? |
+|------|--------|----------|-------|
+| T4 | 1w × BS=20, 1 Redis | 361ms | ✓ |
+| T6 | 4w × BS=20, 1 Redis | 1,450ms | ❌ |
+| T6a | 4w × BS=5, 1 Redis | 351ms | ✓ |
+| T7 | 4w × BS=20, 2 Redis | 623ms | ❌ |
+| T7+save_status | 4w × BS=5, 2 Redis, dirty Redis | 564ms | ❌ |
+| **T7+abatch_get** | **4w × BS=5, 2 Redis, clean Redis** | **430ms** | **✓** |

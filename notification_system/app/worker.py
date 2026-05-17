@@ -15,6 +15,10 @@ time = sum of delivery times). Now they run concurrently (total time = max of
 delivery times). channel.send() is still sync (simulates network I/O) so it
 runs in the default thread executor — no event-loop blocking.
 
+Tier 7+ batch fetch: abatch_get() pipelines N HGETALLs → 1 round-trip to primary
+Redis (vs N individual round-trips). Batch XACK collapses N XACKs → 1 command to
+delivery Redis per batch.
+
 Consumer name = hostname (unique per container in docker-compose).
 """
 import asyncio
@@ -58,28 +62,55 @@ async def _ensure_group(r: aioredis.Redis) -> None:
         pass  # group already exists
 
 
-async def _process_message(
+async def _process_batch(
     r: aioredis.Redis,
-    msg_id: str,
-    data: dict,
+    msgs: list[tuple[str, dict]],
     loop: asyncio.AbstractEventLoop,
 ) -> None:
-    """Fetch, deliver, and ACK one stream message. Runs concurrently with peers."""
-    nid = data.get("notification_id")
-    if nid:
-        notification = await store.aget(nid)
-        if notification is not None:
-            # deliver() uses ThreadPoolExecutor internally for timeouts, so run
-            # it in the executor to avoid blocking the event loop during retries.
-            await loop.run_in_executor(None, deliver, notification)
+    """Fetch all notifications in one pipeline round-trip, deliver concurrently, ACK in batch."""
+    msg_ids = [msg_id for msg_id, _ in msgs]
+    nids = [data.get("notification_id") for _, data in msgs]
+
+    # One pipeline round-trip to primary Redis (vs N individual HGETALLs).
+    notifications = await store.abatch_get([nid for nid in nids if nid])
+
+    # Map nid → notification for lookup (abatch_get preserves order of non-None nids).
+    nid_list = [nid for nid in nids if nid]
+    nid_to_notif = {nid: n for nid, n in zip(nid_list, notifications) if n is not None}
+
+    # Concurrent delivery — one executor task per notification.
+    deliver_tasks = []
+    for nid in nids:
+        notif = nid_to_notif.get(nid) if nid else None
+        if notif is not None:
+            deliver_tasks.append(loop.run_in_executor(None, deliver, notif))
+        else:
+            deliver_tasks.append(asyncio.sleep(0))
+
+    results = await asyncio.gather(*deliver_tasks, return_exceptions=True)
+    for exc in results:
+        if isinstance(exc, Exception):
+            print(f"[worker] delivery error: {exc}", flush=True)
+
+    # Batch ACK: 1 XACK command for the whole batch (vs N individual XACKs).
     # ACK regardless — phantom/already-deleted notifications must not requeue.
-    await r.xack(STREAM_KEY, GROUP_NAME, msg_id)
+    if msg_ids:
+        await r.xack(STREAM_KEY, GROUP_NAME, *msg_ids)
 
 
 async def run() -> None:
     # Tier 7: XREADGROUP/XACK on delivery Redis; store reads/writes on primary Redis.
     r = aioredis.from_url(config.DELIVERY_REDIS_URL, decode_responses=True, max_connections=20)
     await _wait_for_redis(r)
+
+    # Also wait for primary Redis — abatch_get() hits store._ar which connects
+    # to REDIS_URL. Primary Redis may still be loading AOF when delivery Redis is
+    # already available (they are independent processes with separate AOF files).
+    # Without this wait, the worker enters a tight error loop at startup.
+    primary_r = aioredis.from_url(config.REDIS_URL, decode_responses=True)
+    await _wait_for_redis(primary_r)
+    await primary_r.aclose()
+
     await _ensure_group(r)
 
     start_http_server(METRICS_PORT)
@@ -105,16 +136,15 @@ async def run() -> None:
             count=BATCH_SIZE,
             block=BLOCK_MS,
         )
-        tasks = []
+        all_msgs: list[tuple[str, dict]] = []
         for _stream, msgs in (messages or []):
-            for msg_id, data in msgs:
-                tasks.append(_process_message(r, msg_id, data, loop))
+            all_msgs.extend(msgs)
 
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for exc in results:
-                if isinstance(exc, Exception):
-                    print(f"[worker] unhandled error in batch: {exc}", flush=True)
+        if all_msgs:
+            try:
+                await _process_batch(r, all_msgs, loop)
+            except Exception as exc:
+                print(f"[worker] unhandled batch error: {exc}", flush=True)
 
     print("[worker] shutting down gracefully", flush=True)
 

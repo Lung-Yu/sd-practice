@@ -469,3 +469,52 @@ The `num_workers × BATCH_SIZE = constant` rule works: keeping total concurrent 
 BATCH_SIZE tuning is a config fix, not a scaling fix. 4 workers × BS=5 delivers the same 20 concurrent notifications as 1 worker × BS=20. The real throughput benefit of multiple workers is **fault tolerance** (1 worker failure = 25% delivery capacity lost, not 100%), not raw speed.
 
 To get 4× delivery throughput without API latency regression, the fix is Tier 7: separate Redis instances for API state vs delivery stream.
+
+---
+
+## Tier 7: Split Delivery Redis (Stream + DLQ Isolation)
+
+**Change:** Added `redis-delivery` service to `docker-compose.yml`. Stream operations (XADD, XREADGROUP, XACK) and DLQ use `DELIVERY_REDIS_URL`; notification state (HASH, idempotency, rate limits, user ZSETs) stays on primary `REDIS_URL`. Falls back to `REDIS_URL` when `DELIVERY_REDIS_URL` is unset — backward-compatible single-Redis mode preserved.
+
+Files: `config.py` (new `DELIVERY_REDIS_URL`), `queue.py` (use delivery URL for all clients), `worker.py` (XREADGROUP client uses delivery URL).
+
+### Results: 4 workers × BATCH_SIZE=20, separate delivery Redis
+
+| Config | POST p95 | GET p95 | RPS | Pass? |
+|--------|----------|---------|-----|-------|
+| Tier 6: 4w BS=20, 1 Redis | 1,450ms ❌ | 532ms ❌ | 800 | ❌ |
+| Tier 6a: 4w BS=5, 1 Redis | 351ms ✓ | 162ms ✓ | 2,838 | ✓ |
+| **Tier 7: 4w BS=20, 2 Redis** | **623ms ❌** | **281ms ✓** | **1,963** | ❌ |
+
+Consumer distribution: 40,119 / 39,951 / 40,211 / 40,093 SENT per worker (~25% each).
+
+### Why Tier 7 only partially improved latency
+
+Stream isolation removed XADD/XREADGROUP/XACK from primary Redis ✓. But `deliver()` in each worker still calls `store.save()` (HSET + SET + ZADD pipeline) on the **primary Redis** after every delivery. With 4 workers × BATCH_SIZE=20, that's 80 concurrent delivery-status pipelines still competing with API requests on primary Redis.
+
+GET p95 improved (281ms vs 532ms) because stream operations no longer compete with reads. POST p95 still fails (623ms) because delivery status writes still do.
+
+### Root cause diagram
+
+```
+Primary Redis pressure sources:
+  API: INCR+EXPIRE (rate limit) + GET (idempotency) + pipeline(HSET+SET+ZADD) + XADD*
+  Worker: HGETALL (store.aget × 80) + pipeline(HSET+SET+ZADD) (store.save × 80)
+                                                                ^--- still here in Tier 7
+  (* XADD now goes to delivery Redis ✓)
+```
+
+### What would fully isolate
+
+To eliminate worker→primary-Redis pressure, delivery workers would need to write status updates to a separate store:
+- **Separate delivery-status Redis (Redis-C)**: workers write SENT/FAILED to Redis-C; API reads from both Redis-A (notifications) and Redis-C (delivery status)
+- **Event bus**: delivery outcomes published as events, API state updated asynchronously
+
+Both add operational complexity. For current scale, **Tier 6a (BATCH_SIZE inverse scaling)** achieves the same result without extra infrastructure.
+
+### Key takeaways
+
+- Stream isolation is necessary but not sufficient when workers write back to the primary store
+- Tier 6a's `num_workers × BATCH_SIZE = constant` rule is simpler and more effective at this scale
+- Multi-Redis split pays off when delivery status write volume exceeds what a single Redis can handle (much higher RPS than current setup)
+- Backward-compatible via env var fallback — zero config change for existing single-Redis deployments

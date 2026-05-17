@@ -42,7 +42,7 @@ def deliver(notification: Notification) -> Notification:
                 notification.status = NotificationStatus.SENT
                 notification.sent_at = datetime.utcnow()
                 notification.error = None  # clear any error from a previous failed attempt
-                store.save(notification)
+                store.save_status(notification)  # status-only HSET, skips idempotency/ZADD
                 notifications_sent.labels(channel=notification.channel, status="SENT").inc()
                 return notification
 
@@ -57,7 +57,7 @@ def deliver(notification: Notification) -> Notification:
 
     notification.status = NotificationStatus.FAILED
     notification.error = last_error
-    store.save(notification)
+    store.save_status(notification)  # status-only HSET, skips idempotency/ZADD
     notifications_sent.labels(channel=notification.channel, status="FAILED").inc()
 
     if config.REDIS_URL:

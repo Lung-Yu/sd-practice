@@ -84,6 +84,31 @@ class RedisNotificationStore:
         )
         pipe.execute()
 
+    def save_status(self, notification: Notification) -> None:
+        """Update only delivery-outcome fields (status, sent_at, error, attempts).
+        Skips idempotency SET and user ZADD — both were written on initial create
+        and never change. Reduces delivery-status writes from 3 commands → 1."""
+        self._r.hset(
+            f"notification:{notification.notification_id}",
+            mapping={
+                "status": notification.status.value,
+                "sent_at": notification.sent_at.isoformat() if notification.sent_at else "",
+                "error": notification.error or "",
+                "attempts": str(notification.attempts),
+            },
+        )
+
+    async def asave_status(self, notification: Notification) -> None:
+        await self._ar.hset(
+            f"notification:{notification.notification_id}",
+            mapping={
+                "status": notification.status.value,
+                "sent_at": notification.sent_at.isoformat() if notification.sent_at else "",
+                "error": notification.error or "",
+                "attempts": str(notification.attempts),
+            },
+        )
+
     # -- list: batch HGETALL via pipeline to avoid N round-trips --------------
 
     def list_for_user(self, user_id: str) -> list[Notification]:
